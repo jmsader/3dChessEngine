@@ -29,4 +29,9 @@ int Engine::eval_material(const Position &pos) {
   return cpawns;
 }
 
+bool Engine::is_mate_cpawns(int cp) {
+  const int a = cp < 0 ? -cp : cp; // |s| (std::abs isn't constexpr in C++17)
+  return a >= MATE_CPAWNS - MAX_PLY && a <= MATE_CPAWNS;
+}
+
 } // namespace rs

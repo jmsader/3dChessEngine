@@ -7,7 +7,7 @@
 
 namespace rs {
 
-Greedy::Greedy() : Engine("GREEDY") {}
+Greedy::Greedy() : Engine("Greedy") {}
 
 std::tuple<Move, int> Greedy::search(const Position &pos) {
   Position _pos = pos; // start pos
