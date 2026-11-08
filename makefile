@@ -11,7 +11,7 @@ CORE_SRC := $(wildcard src/*.cpp)
 CORE_OBJ := $(patsubst src/%.cpp,$(BUILD)/%.o,$(CORE_SRC))
 HEADERS  := $(wildcard include/raumschach/*.h)
 LIB      := $(BUILD)/libraumschach_core.a
-BINS     := $(BUILD)/perft $(BUILD)/selfplay $(BUILD)/unit_tests
+BINS     := $(BUILD)/perft $(BUILD)/selfplay $(BUILD)/unit_tests $(BUILD)/match
 
 all: $(BINS)
 
@@ -28,6 +28,9 @@ $(BUILD)/perft: tools/perft.cpp $(LIB) $(HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LIB) -o $@
 
 $(BUILD)/selfplay: tools/selfplay.cpp $(LIB) $(HEADERS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LIB) -o $@
+
+$(BUILD)/match: tools/match.cpp $(LIB) $(HEADERS)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(LIB) -o $@
 
 $(BUILD)/unit_tests: tests/unit_tests.cpp $(LIB) $(HEADERS)

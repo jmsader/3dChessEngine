@@ -19,6 +19,9 @@ add_library(raumschach_core STATIC
   src/movegen.cpp
   src/notation.cpp
   src/rules.cpp
+  src/engine.cpp
+  src/greedy.cpp
+  src/random.cpp
 )
 target_include_directories(raumschach_core PUBLIC include)
 
@@ -38,6 +41,9 @@ target_link_libraries(perft PRIVATE raumschach_core)
 
 add_executable(selfplay tools/selfplay.cpp)
 target_link_libraries(selfplay PRIVATE raumschach_core)
+
+add_executable(match tools/match.cpp)
+target_link_libraries(match PRIVATE raumschach_core)
 
 # ---------------------------------------------------------------- tests
 enable_testing()
