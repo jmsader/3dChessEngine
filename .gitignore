@@ -6,3 +6,5 @@ out/
 *.a
 *.obj
 *.exe
+.vscode/
+compile_flags.txt
