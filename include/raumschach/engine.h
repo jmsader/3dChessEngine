@@ -8,6 +8,7 @@ namespace rs {
 class Engine {
 public:
   std::string name;
+  // may not need
 
   Engine(std::string name);
   virtual std::tuple<Move, int> search(const Position &pos) = 0;
