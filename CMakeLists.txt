@@ -22,6 +22,8 @@ add_library(raumschach_core STATIC
   src/engine.cpp
   src/greedy.cpp
   src/random.cpp
+  src/Minimax.cpp
+  src/alphabeta.cpp
 )
 target_include_directories(raumschach_core PUBLIC include)
 

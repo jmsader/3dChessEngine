@@ -3,10 +3,14 @@
 // Usage:
 //   match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--csv FILE] [--anchor NAME] [--verbose]
 //
-//   engines   any of: random greedy minimax minimaxN   (case-insensitive; the same name may
-//             appear twice, e.g. "greedy greedy"). "minimax" searches 2 plies, "minimax3" 3 plies.
+//   engines   Random, Greedy, Minimax<N>, Alpha-Beta<N>: the engines' own names, in any
+//             capitalization. <N> is the search depth in plies ("Minimax3", "Alpha-Beta5");
+//             without it, the engine's own default depth is used. All output uses the
+//             engine's name; the same engine may appear twice ("Greedy Greedy" -> Greedy#1, Greedy#2).
 //   --games   games per pair (default 10); colours alternate, so use an even number
-//   --seed    seed for std::rand (default 1); the same command gives the same results
+//   --seed    master seed (default 1). Every engine object gets its own seed derived from it,
+//             so the same command gives the same results on any machine, and engines never
+//             share a random sequence (e.g. both sides of "greedy greedy" choose independently).
 //   --csv     write one row per game to FILE, including both engines' final Elo, and the
 //             final ratings to FILE with "_elo" before the extension (e.g. results_elo.csv)
 //   --anchor  engine whose Elo is fixed at 0 (default: random if it plays, else the first engine listed)
@@ -23,8 +27,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -41,32 +47,69 @@
 
 namespace {
 
-// Add new engines here (one line each), and their names to kEngineNames.
-const std::vector<std::string> kEngineNames = {"random", "greedy", "minimax", "minimaxN"};
-
 std::string lower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
 
-// "minimax" -> depth 2, "minimax3" -> depth 3; -1 if the name isn't a minimax name.
-int minimaxDepth(const std::string& name) {
-    const std::string prefix = "minimax";
+// Depth from a name like "minimax3" or "alpha-beta5": the number after `prefix`, 0 if the name
+// is just the prefix (use the engine's own default depth), or -1 if it doesn't match.
+int depthFromName(const std::string& name, const std::string& prefix) {
     if (name.compare(0, prefix.size(), prefix) != 0) return -1;
     const std::string rest = name.substr(prefix.size());
-    if (rest.empty()) return 2;
+    if (rest.empty()) return 0;
     if (rest.size() > 2 || !std::all_of(rest.begin(), rest.end(), [](char c) { return c >= '0' && c <= '9'; })) return -1;
     const int d = std::stoi(rest);
     return d >= 1 ? d : -1;
 }
 
+// How to create each engine. Add new engines here (one line each). The name you type, and the
+// name shown in all output, is the engine's own `name` member, so renaming an engine in its
+// constructor updates the match tool automatically. Engines with a search depth also accept a
+// number after their name ("Alpha-Beta5"); without one, their constructor's default is used.
+struct EngineEntry {
+    std::function<std::unique_ptr<rs::Engine>()> makeDefault;
+    std::function<std::unique_ptr<rs::Engine>(int)> makeWithDepth;  // empty: engine has no depth
+};
+
+const std::vector<EngineEntry>& engineTable() {
+    static const std::vector<EngineEntry> table = {
+        {[] { return std::make_unique<rs::Random>(); }, nullptr},
+        {[] { return std::make_unique<rs::Greedy>(); }, nullptr},
+        {[] { return std::make_unique<rs::Minimax>(); }, [](int d) { return std::make_unique<rs::Minimax>(d); }},
+        {[] { return std::make_unique<rs::AlphaBeta>(); }, [](int d) { return std::make_unique<rs::AlphaBeta>(d); }},
+    };
+    return table;
+}
+
+// The name to type for an engine: its own name with any trailing depth digits removed
+// ("Alpha-Beta3" -> "Alpha-Beta").
+std::string typedName(const EngineEntry& e) {
+    std::string n = e.makeDefault()->name;
+    if (e.makeWithDepth)
+        while (!n.empty() && n.back() >= '0' && n.back() <= '9') n.pop_back();
+    return n;
+}
+
+// Creates an engine from its name (case-insensitive), e.g. "Greedy", "Alpha-Beta5".
 std::unique_ptr<rs::Engine> makeEngine(const std::string& rawName) {
     const std::string name = lower(rawName);
-    if (name == "random") return std::make_unique<rs::Random>();
-    if (name == "greedy") return std::make_unique<rs::Greedy>();
-    if (name == "minimax") return std::make_unique<rs::Minimax>();
-    if (const int d = minimaxDepth(name); d > 0) return std::make_unique<rs::Minimax>(d);
+    for (const EngineEntry& e : engineTable()) {
+        const std::string base = lower(typedName(e));
+        if (name == base) return e.makeDefault();
+        if (e.makeWithDepth) {
+            const int d = depthFromName(name, base);
+            if (d > 0) return e.makeWithDepth(d);
+        }
+    }
     return nullptr;
+}
+
+// "Random Greedy Minimax<N> Alpha-Beta<N>", for usage messages.
+std::string availableEngines() {
+    std::string out;
+    for (const EngineEntry& e : engineTable()) out += " " + typedName(e) + (e.makeWithDepth ? "<N>" : "");
+    return out;
 }
 
 enum class Outcome { WhiteWins, BlackWins, Draw };
@@ -130,7 +173,8 @@ std::string pairEloText(int w, int d, int l) {
     if (s <= 0.0) return "n/a (no points)";
     if (s >= 1.0) return "n/a (perfect score)";
     const double var = (w + 0.25 * d) / n - s * s;
-    const double sigma = std::sqrt(std::max(var, 0.0) / n);
+    if (var <= 0.0) return signedInt(-400.0 * std::log10(1.0 / s - 1.0)) + " [no range: every game drawn]";
+    const double sigma = std::sqrt(var / n);
     auto toElo = [](double x) { return -400.0 * std::log10(1.0 / x - 1.0); };
     const double lo = s - 1.96 * sigma, hi = s + 1.96 * sigma;
     return signedInt(toElo(s)) + " [" + (lo <= 0.0 ? std::string("-inf") : signedInt(toElo(lo))) + ", " +
@@ -236,6 +280,16 @@ Ratings fitElo(std::size_t n, const std::vector<PairResult>& pairs, std::size_t 
     return r;
 }
 
+// Distinct, well-mixed seed for one engine object: (master seed, pair, side) -> 64 bits.
+std::uint64_t engineSeed(unsigned master, int pair, int side) {
+    std::uint64_t z = (static_cast<std::uint64_t>(master) << 32) ^ (static_cast<std::uint64_t>(pair) << 1) ^
+                      static_cast<std::uint64_t>(side);
+    z += 0x9E3779B97F4A7C15ull;  // splitmix64 finaliser
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
 // "results.csv" -> "results_elo.csv"; "out" -> "out_elo.csv"
 std::string ratingsFileName(const std::string& csvFile) {
     const auto dot = csvFile.find_last_of('.');
@@ -263,8 +317,7 @@ int main(int argc, char** argv) {
         else names.push_back(arg);
     }
 
-    std::string available;
-    for (const auto& n : kEngineNames) available += " " + n;
+    const std::string available = availableEngines();
     if (names.size() < 2 || games < 1) {
         std::cerr << "usage: match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--csv FILE] [--anchor NAME] [--verbose]\n"
                   << "engines:" << available << "\n";
@@ -273,22 +326,25 @@ int main(int argc, char** argv) {
     for (const auto& n : names)
         if (!makeEngine(n)) { std::cerr << "unknown engine: " << n << " (choose from:" << available << ")\n"; return 2; }
 
-    // Labels for the report: a name given more than once becomes "greedy#1", "greedy#2", ...
+    // Labels for the report: each engine's own name (e.g. "Alpha-Beta3"); a name that appears
+    // more than once becomes "Greedy#1", "Greedy#2", ...
+    std::vector<std::string> baseNames;
+    for (const auto& n : names) baseNames.push_back(makeEngine(n)->name);
     std::vector<std::string> labels;
-    for (std::size_t i = 0; i < names.size(); ++i) {
-        const auto total = std::count(names.begin(), names.end(), names[i]);
-        const auto nth = std::count(names.begin(), names.begin() + static_cast<long>(i) + 1, names[i]);
-        labels.push_back(total > 1 ? names[i] + "#" + std::to_string(nth) : names[i]);
+    for (std::size_t i = 0; i < baseNames.size(); ++i) {
+        const auto total = std::count(baseNames.begin(), baseNames.end(), baseNames[i]);
+        const auto nth = std::count(baseNames.begin(), baseNames.begin() + static_cast<long>(i) + 1, baseNames[i]);
+        labels.push_back(total > 1 ? baseNames[i] + "#" + std::to_string(nth) : baseNames[i]);
     }
 
     // Default anchor: the (first) random engine if it plays, otherwise the first engine listed.
     std::size_t anchor = 0;
     for (std::size_t i = 0; i < names.size(); ++i)
-        if (lower(names[i]) == "random") { anchor = i; break; }
+        if (lower(baseNames[i]) == "random") { anchor = i; break; }
     if (!anchorName.empty()) {
         bool found = false;
         for (std::size_t i = 0; i < labels.size() && !found; ++i)
-            if (lower(labels[i]) == lower(anchorName)) { anchor = i; found = true; }
+            if (lower(labels[i]) == lower(anchorName) || lower(baseNames[i]) == lower(anchorName)) { anchor = i; found = true; }
         if (!found) { std::cerr << "--anchor " << anchorName << " is not one of the engines in this match\n"; return 2; }
     }
 
@@ -300,7 +356,6 @@ int main(int argc, char** argv) {
         if (!csv || !ratingsCsv) { std::cerr << "cannot write " << csvFile << " / " << ratingsFile << "\n"; return 2; }
     }
 
-    std::srand(seed);
     std::vector<PairResult> pairs;
     std::vector<GameRow> rows;
     int pairIndex = 0;
@@ -308,6 +363,8 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < names.size(); ++i) {
         for (std::size_t j = i + 1; j < names.size(); ++j, ++pairIndex) {
             auto a = makeEngine(names[i]), b = makeEngine(names[j]);  // fresh objects per pair
+            a->seed(engineSeed(seed, pairIndex, 0));
+            b->seed(engineSeed(seed, pairIndex, 1));
             const std::string& la = labels[i];
             const std::string& lb = labels[j];
             PairResult pr{i, j};

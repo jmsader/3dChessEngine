@@ -1,10 +1,11 @@
 #include "raumschach/engine.h"
 #include "raumschach/movegen.h"
+#include "raumschach/rng.h"
 #include <tuple>
 
 namespace rs {
 
-Minimax::Minimax(int max_depth) : Engine("Minimax"), max_depth_(max_depth) {}
+Minimax::Minimax(int max_depth) : Engine("Minimax" + std::to_string(max_depth)), max_depth_(max_depth) {}
 
 int Minimax::negamax(Position &pos_nd, int depth, int ply) {
   MoveList moves{};
@@ -33,7 +34,7 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
   if (moves.empty())
     return {Move{}, pos.inCheck() ? -MATE_CPAWNS : 0};
 
-  Move best_move{};
+  MoveList best_moves;
   int best_cpawns = -INF_CPAWNS;
   for (Move move : moves) {
     pos_root.makeMove(move);
@@ -41,9 +42,13 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
     pos_root.unmakeMove();
     if (cand_cpawns > best_cpawns) {
       best_cpawns = cand_cpawns;
-      best_move = move;
+      best_moves.clear();
+      best_moves.push(move);
+    } else if (cand_cpawns == best_cpawns) {
+      best_moves.push(move);
     }
   }
+  Move best_move = best_moves[rng.below(best_moves.size())];
 
   return {best_move, best_cpawns};
 }

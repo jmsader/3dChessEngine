@@ -16,8 +16,7 @@ std::tuple<Move, int> Random::search(const Position &pos) {
   if (moves.empty()) {
     return {Move{}, eval_material(_pos)};
   }
-  int move_randidx = std::rand() % moves.size();
-  Move rand_move = moves[move_randidx];
+  Move rand_move = moves[rng.below(moves.size())];
   _pos.makeMove(rand_move);
   int move_cpawns = -eval_material(_pos);
   _pos.unmakeMove();

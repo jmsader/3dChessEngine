@@ -1,6 +1,7 @@
 #include "raumschach/engine.h"
 #include "raumschach/position.h"
 #include "raumschach/types.h"
+#include <cstdint>
 #include <map>
 
 namespace rs {
@@ -33,5 +34,7 @@ bool Engine::is_mate_cpawns(int cp) {
   const int a = cp < 0 ? -cp : cp; // |s| (std::abs isn't constexpr in C++17)
   return a >= MATE_CPAWNS - MAX_PLY && a <= MATE_CPAWNS;
 }
+
+void Engine::seed(std::uint64_t s) { rng.reseed(s); }
 
 } // namespace rs
