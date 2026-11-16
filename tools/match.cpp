@@ -3,14 +3,14 @@
 // Usage:
 //   match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--csv FILE] [--anchor NAME] [--verbose]
 //
-//   engines   Random, Greedy, Minimax<N>, Alpha-Beta<N>: the engines' own names, in any
+//   engines   Random, Minimax<N>, Alpha-Beta<N>: the engines' own names, in any
 //             capitalization. <N> is the search depth in plies ("Minimax3", "Alpha-Beta5");
 //             without it, the engine's own default depth is used. All output uses the
-//             engine's name; the same engine may appear twice ("Greedy Greedy" -> Greedy#1, Greedy#2).
+//             engine's name; the same engine may appear twice ("Minimax1 Minimax1" -> Minimax1#1, Minimax1#2).
 //   --games   games per pair (default 10); colours alternate, so use an even number
 //   --seed    master seed (default 1). Every engine object gets its own seed derived from it,
 //             so the same command gives the same results on any machine, and engines never
-//             share a random sequence (e.g. both sides of "greedy greedy" choose independently).
+//             share a random sequence (e.g. both sides of "Minimax1 Minimax1" choose independently).
 //   --csv     write one row per game to FILE, including both engines' final Elo, and the
 //             final ratings to FILE with "_elo" before the extension (e.g. results_elo.csv)
 //   --anchor  engine whose Elo is fixed at 0 (default: random if it plays, else the first engine listed)
@@ -72,12 +72,22 @@ struct EngineEntry {
     std::function<std::unique_ptr<rs::Engine>(int)> makeWithDepth;  // empty: engine has no depth
 };
 
+// Options with the given pruning setting; depth 0 keeps MinimaxOptions' default depth.
+rs::MinimaxOptions minimaxOptions(int depth, bool pruning) {
+    rs::MinimaxOptions o;
+    if (depth > 0) o.depth = depth;
+    o.pruning = pruning;
+    return o;
+}
+
 const std::vector<EngineEntry>& engineTable() {
     static const std::vector<EngineEntry> table = {
         {[] { return std::make_unique<rs::Random>(); }, nullptr},
-        {[] { return std::make_unique<rs::Greedy>(); }, nullptr},
-        {[] { return std::make_unique<rs::Minimax>(); }, [](int d) { return std::make_unique<rs::Minimax>(d); }},
-        {[] { return std::make_unique<rs::AlphaBeta>(); }, [](int d) { return std::make_unique<rs::AlphaBeta>(d); }},
+        // Minimax<N>: the Minimax engine with pruning off; Alpha-Beta<N>: the same engine with pruning on.
+        {[] { return std::make_unique<rs::Minimax>(minimaxOptions(0, false)); },
+         [](int d) { return std::make_unique<rs::Minimax>(minimaxOptions(d, false)); }},
+        {[] { return std::make_unique<rs::Minimax>(minimaxOptions(0, true)); },
+         [](int d) { return std::make_unique<rs::Minimax>(minimaxOptions(d, true)); }},
     };
     return table;
 }
@@ -91,7 +101,7 @@ std::string typedName(const EngineEntry& e) {
     return n;
 }
 
-// Creates an engine from its name (case-insensitive), e.g. "Greedy", "Alpha-Beta5".
+// Creates an engine from its name (case-insensitive), e.g. "Random", "Alpha-Beta5".
 std::unique_ptr<rs::Engine> makeEngine(const std::string& rawName) {
     const std::string name = lower(rawName);
     for (const EngineEntry& e : engineTable()) {
@@ -105,7 +115,7 @@ std::unique_ptr<rs::Engine> makeEngine(const std::string& rawName) {
     return nullptr;
 }
 
-// "Random Greedy Minimax<N> Alpha-Beta<N>", for usage messages.
+// "Random Minimax<N> Alpha-Beta<N>", for usage messages.
 std::string availableEngines() {
     std::string out;
     for (const EngineEntry& e : engineTable()) out += " " + typedName(e) + (e.makeWithDepth ? "<N>" : "");
@@ -327,7 +337,7 @@ int main(int argc, char** argv) {
         if (!makeEngine(n)) { std::cerr << "unknown engine: " << n << " (choose from:" << available << ")\n"; return 2; }
 
     // Labels for the report: each engine's own name (e.g. "Alpha-Beta3"); a name that appears
-    // more than once becomes "Greedy#1", "Greedy#2", ...
+    // more than once becomes "Minimax1#1", "Minimax1#2", ...
     std::vector<std::string> baseNames;
     for (const auto& n : names) baseNames.push_back(makeEngine(n)->name);
     std::vector<std::string> labels;

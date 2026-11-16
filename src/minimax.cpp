@@ -5,11 +5,14 @@
 
 namespace rs {
 
-AlphaBeta::AlphaBeta(int max_depth)
-    : Engine("Alpha-Beta" + std::to_string(max_depth)), max_depth_(max_depth) {}
+std::string Minimax::nameFor(const MinimaxOptions &opts) {
+  return (opts.pruning ? "Alpha-Beta" : "Minimax") + std::to_string(opts.depth);
+}
 
-int AlphaBeta::negamax(Position &pos_nd, int depth, int ply, int alpha,
-                       int beta) {
+Minimax::Minimax(MinimaxOptions opts) : Engine(nameFor(opts)), opts_(opts) {}
+
+int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
+                     int beta) {
   MoveList moves{};
   generateLegalMoves(pos_nd, moves);
   if (moves.empty())
@@ -18,11 +21,16 @@ int AlphaBeta::negamax(Position &pos_nd, int depth, int ply, int alpha,
     return eval_material(pos_nd);
 
   for (Move move : moves) {
-    if (alpha >= beta) {
+    if (opts_.pruning && alpha >= beta) {
       break;
     }
     pos_nd.makeMove(move);
-    const int score = -negamax(pos_nd, depth - 1, ply + 1, -beta, -alpha);
+    // Without pruning every child gets the full window, so every score is exact
+    // (plain minimax).
+    const int score =
+        opts_.pruning
+            ? -negamax(pos_nd, depth - 1, ply + 1, -beta, -alpha)
+            : -negamax(pos_nd, depth - 1, ply + 1, -INF_CPAWNS, INF_CPAWNS);
     pos_nd.unmakeMove();
     if (score > alpha) {
       alpha = score;
@@ -32,7 +40,7 @@ int AlphaBeta::negamax(Position &pos_nd, int depth, int ply, int alpha,
   return alpha;
 }
 
-std::tuple<Move, int> AlphaBeta::search(const Position &pos) {
+std::tuple<Move, int> Minimax::search(const Position &pos) {
   Position pos_root = pos; // one copy per search
   MoveList moves{};
   generateLegalMoves(pos_root, moves);
@@ -46,7 +54,7 @@ std::tuple<Move, int> AlphaBeta::search(const Position &pos) {
   for (Move move : moves) {
     pos_root.makeMove(move);
     const int cand_cpawns =
-        -negamax(pos_root, max_depth_ - 1, 1, -beta, -(alpha - 1));
+        -negamax(pos_root, opts_.depth - 1, 1, -beta, -(alpha - 1));
     pos_root.unmakeMove();
     if (cand_cpawns > alpha) {
       alpha = cand_cpawns;

@@ -11,11 +11,14 @@
 #include <vector>
 
 #include "raumschach/config.h"
+#include "raumschach/engine.h"
 #include "raumschach/geometry.h"
 #include "raumschach/movegen.h"
 #include "raumschach/notation.h"
 #include "raumschach/position.h"
+#include "raumschach/rng.h"
 #include "raumschach/rules.h"
+#include "reference_minimax.h"
 
 namespace {
 
@@ -464,6 +467,142 @@ void testPerftRegression() {
     CHECK(p.samePlacementAndState(Position()));
 }
 
+// ------------------------------------------------------------------ engines
+//
+// Test positions come from seeded random games, so these tests need no data files.
+
+bool givesMate(Position p, Move m) {
+    p.makeMove(m);
+    MoveList replies;
+    generateLegalMoves(p, replies);
+    return replies.empty() && p.inCheck();
+}
+
+// Every 7th position of seeded random games, until `count` are collected.
+std::vector<Position> samplePositions(int count) {
+    std::vector<Position> out;
+    Rng rng(12345);
+    while (static_cast<int>(out.size()) < count) {
+        Position p;
+        for (int ply = 0; ply < 300 && static_cast<int>(out.size()) < count && !gameStatus(p).isOver(); ++ply) {
+            if (ply % 7 == 3) out.push_back(p);
+            MoveList moves;
+            generateLegalMoves(p, moves);
+            p.makeMove(moves[static_cast<std::size_t>(rng.below(moves.size()))]);
+        }
+    }
+    return out;
+}
+
+// Positions from seeded random games where the side to move has a mate in one
+// (and not every move mates, so finding it takes a real choice).
+std::vector<Position> mateInOnePositions(int count) {
+    std::vector<Position> out;
+    Rng rng(2026);
+    for (int game = 0; game < 20000 && static_cast<int>(out.size()) < count; ++game) {
+        Position p;
+        for (int ply = 0; ply < 400 && !gameStatus(p).isOver(); ++ply) {
+            MoveList moves;
+            generateLegalMoves(p, moves);
+            int mating = 0;
+            for (Move m : moves) mating += givesMate(p, m);
+            if (mating > 0 && mating < static_cast<int>(moves.size())) {
+                out.push_back(p);
+                break;
+            }
+            p.makeMove(moves[static_cast<std::size_t>(rng.below(moves.size()))]);
+        }
+    }
+    return out;
+}
+
+MinimaxOptions opts(int depth, bool pruning) {
+    MinimaxOptions o;
+    o.depth = depth;
+    o.pruning = pruning;
+    return o;
+}
+
+void testEngineNames() {
+    CHECK(Random().name == "Random");
+    CHECK(Minimax().name == "Alpha-Beta3");
+    CHECK(Minimax(opts(5, true)).name == "Alpha-Beta5");
+    CHECK(Minimax(opts(2, false)).name == "Minimax2");
+}
+
+// The engine, with pruning on and off, must return exactly the reference search's score and
+// move (same seed => same tie pick). Pruning may only make the search faster.
+void testMinimaxMatchesReference() {
+    const std::vector<Position> positions = samplePositions(30);
+    for (int depth = 1; depth <= 2; ++depth) {
+        for (const bool pruning : {false, true}) {
+            for (const Position& p : positions) {
+                Minimax engine(opts(depth, pruning));
+                Rng rng{};  // the engines' default seed
+                const auto [engineMove, engineScore] = engine.search(p);
+                const auto [refMove, refScore] = reference::minimax(p, depth, rng);
+                CHECK_EQ(engineScore, refScore);
+                CHECK(engineMove == refMove);
+            }
+        }
+    }
+    for (int i = 0; i < 4; ++i) {  // depth 3, alpha-beta only (plain minimax is slow there)
+        Minimax engine(opts(3, true));
+        Rng rng{};
+        const auto [engineMove, engineScore] = engine.search(positions[static_cast<std::size_t>(i)]);
+        const auto [refMove, refScore] = reference::minimax(positions[static_cast<std::size_t>(i)], 3, rng);
+        CHECK_EQ(engineScore, refScore);
+        CHECK(engineMove == refMove);
+    }
+}
+
+void testEnginesReturnLegalMoves() {
+    for (const Position& p : samplePositions(60)) {
+        MoveList legal;
+        Position copy = p;
+        generateLegalMoves(copy, legal);
+        Random random;
+        Minimax plain(opts(1, false));
+        Minimax pruned(opts(2, true));
+        for (Engine* e : std::vector<Engine*>{&random, &plain, &pruned}) {
+            const Move m = std::get<0>(e->search(p));
+            CHECK(legal.empty() ? m.isNull() : legal.contains(m));
+        }
+    }
+}
+
+void testEnginesFindMateInOne() {
+    const std::vector<Position> positions = mateInOnePositions(10);
+    CHECK(positions.size() == 10u);
+    for (const Position& p : positions) {
+        for (const MinimaxOptions& o : {opts(1, false), opts(1, true), opts(3, true)}) {
+            Minimax engine(o);
+            const auto [move, score] = engine.search(p);
+            CHECK(givesMate(p, move));
+            CHECK_EQ(score, Engine::MATE_CPAWNS - 1);
+        }
+    }
+}
+
+void testEngineSeedsAndPositionUntouched() {
+    const std::vector<Position> positions = samplePositions(20);
+    int differ = 0;
+    for (const Position& p : positions) {
+        Minimax a(opts(1, false)), b(opts(1, false)), c(opts(1, false));
+        a.seed(5);
+        b.seed(5);
+        c.seed(6);
+        const Move ma = std::get<0>(a.search(p));
+        CHECK(ma == std::get<0>(b.search(p)));     // same seed, same choice
+        differ += ma != std::get<0>(c.search(p));  // other seed, sometimes another tied move
+    }
+    CHECK(differ > 0);
+    Position p = positions.back();
+    const std::string before = p.toText();
+    Minimax(opts(2, true)).search(p);
+    CHECK(p.toText() == before);  // search() works on its own copy
+}
+
 }  // namespace
 
 int main() {
@@ -490,6 +629,11 @@ int main() {
         {"move notation", testMoveNotation},
         {"noisy generation", testNoisyGeneration},
         {"perft regression", testPerftRegression},
+        {"engine names", testEngineNames},
+        {"minimax == reference (pruning on and off)", testMinimaxMatchesReference},
+        {"engines return legal moves", testEnginesReturnLegalMoves},
+        {"engines find mate in one", testEnginesFindMateInOne},
+        {"engine seeds, position untouched", testEngineSeedsAndPositionUntouched},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;
