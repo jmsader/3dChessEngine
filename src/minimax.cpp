@@ -3,6 +3,7 @@
 #include "raumschach/rng.h"
 #include "raumschach/types.h"
 #include <algorithm>
+#include <ctime>
 #include <tuple>
 
 namespace rs {
@@ -27,8 +28,9 @@ int MVV_LVA(const Position &pos, Move move) {
 } // namespace
 
 std::string Minimax::nameFor(const MinimaxOptions &opts) {
+  // No depth in the name: the time control sets the depth.
   return std::string(opts.pruning ? "Alpha-Beta" : "Minimax") +
-         (opts.ordering ? "+Ord" : "") + std::to_string(opts.depth);
+         (opts.ordering ? "+Ord" : "");
 }
 
 Minimax::Minimax(MinimaxOptions opts) : Engine(nameFor(opts)), opts_(opts) {}
@@ -72,34 +74,49 @@ int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
 std::tuple<Move, int> Minimax::search(const Position &pos) {
   Position pos_root = pos; // one copy per search
   nodes = 1;               // the root; negamax counts the rest
-  MoveList moves{};
-  generateLegalMoves(pos_root, moves);
-  if (moves.empty())
-    return {Move{}, pos.inCheck() ? -MATE_CPAWNS : 0};
-
-  if (opts_.ordering) {
-    std::stable_sort(moves.begin(), moves.end(), [&pos_root](Move a, Move b) {
-      return MVV_LVA(pos_root, a) > MVV_LVA(pos_root, b);
-    });
-  }
-
+  depth_reached = 0;
   MoveList best_moves;
-  // int best_cpawns = -INF_CPAWNS;
-  int alpha = -INF_CPAWNS;
-  int beta = INF_CPAWNS;
-  for (Move move : moves) {
-    pos_root.makeMove(move);
-    const int cand_cpawns =
-        -negamax(pos_root, opts_.depth - 1, 1, -beta, -(alpha - 1));
-    pos_root.unmakeMove();
-    if (cand_cpawns > alpha) {
-      alpha = cand_cpawns;
-      best_moves.clear();
-      best_moves.push(move);
-    } else if (cand_cpawns == alpha) {
-      best_moves.push(move);
+  int alpha;
+  int iter_depth = 1;
+  const std::clock_t start_time = std::clock();
+  while (int((std::clock() - start_time) / CLOCKS_PER_SEC) * 2 <
+         opts_.secs_per_move) {
+    MoveList moves{};
+    generateLegalMoves(pos_root, moves);
+    if (moves.empty())
+      return {Move{}, pos.inCheck() ? -MATE_CPAWNS : 0};
+
+    if (opts_.ordering) {
+      std::stable_sort(moves.begin(), moves.end(), [&pos_root](Move a, Move b) {
+        return MVV_LVA(pos_root, a) > MVV_LVA(pos_root, b);
+      });
     }
+
+    // int best_cpawns = -INF_CPAWNS;
+    alpha = -INF_CPAWNS;
+    int beta = INF_CPAWNS;
+    for (Move move : moves) {
+      pos_root.makeMove(move);
+      const int cand_cpawns =
+          -negamax(pos_root, iter_depth - 1, 1, -beta, -(alpha - 1));
+      pos_root.unmakeMove();
+      if (cand_cpawns > alpha) {
+        alpha = cand_cpawns;
+        best_moves.clear();
+        best_moves.push(move);
+      } else if (cand_cpawns == alpha) {
+        best_moves.push(move);
+      }
+    }
+    depth_reached = iter_depth; // this depth finished
+    ++iter_depth;
   }
+
+  if (best_moves.empty()) {
+    Random rand_eng;
+    return rand_eng.search(pos);
+  }
+
   Move best_move = best_moves[rng.below(best_moves.size())];
 
   return {best_move, alpha};

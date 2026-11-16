@@ -1,16 +1,19 @@
 // match: round-robin between two or more engines; every pair plays the same number of games.
 //
 // Usage:
-//   match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--csv FILE] [--anchor NAME] [--verbose]
+//   match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--time S] [--csv FILE] [--anchor NAME] [--verbose]
 //
-//   engines   Random, Minimax<N>, Alpha-Beta<N>, Alpha-Beta+Ord<N>: the engines' own names, in any
-//             capitalization. <N> is the search depth in plies ("Minimax3", "Alpha-Beta+Ord5");
-//             without it, the engine's own default depth is used. All output uses the
-//             engine's name; the same engine may appear twice ("Minimax1 Minimax1" -> Minimax1#1, Minimax1#2).
+//   engines   Random, Minimax, Alpha-Beta, Alpha-Beta+Ord: the engines' own names, in any
+//             capitalization. All output uses the engine's name; the same engine may appear
+//             twice ("Minimax Minimax" -> Minimax#1, Minimax#2).
 //   --games   games per pair (default 10); colours alternate, so use an even number
 //   --seed    master seed (default 1). Every engine object gets its own seed derived from it,
 //             so the same command gives the same results on any machine, and engines never
-//             share a random sequence (e.g. both sides of "Minimax1 Minimax1" choose independently).
+//             share a random sequence (e.g. both sides of "Minimax Minimax" choose independently).
+//             Searches are timed, so results also depend on machine speed and load: the same
+//             command can give different games on another run.
+//   --time    global time control: whole seconds per move for every Minimax engine (sets
+//             MinimaxOptions::secs_per_move; without it, the engines' default is used)
 //   --csv     write one row per game to FILE, including both engines' final Elo, and the
 //             final ratings to FILE with "_elo" before the extension (e.g. results_elo.csv)
 //   --anchor  engine whose Elo is fixed at 0 (default: random if it plays, else the first engine listed)
@@ -53,77 +56,45 @@ std::string lower(std::string s) {
     return s;
 }
 
-// Depth from a name like "minimax3" or "alpha-beta5": the number after `prefix`, 0 if the name
-// is just the prefix (use the engine's own default depth), or -1 if it doesn't match.
-int depthFromName(const std::string& name, const std::string& prefix) {
-    if (name.compare(0, prefix.size(), prefix) != 0) return -1;
-    const std::string rest = name.substr(prefix.size());
-    if (rest.empty()) return 0;
-    if (rest.size() > 2 || !std::all_of(rest.begin(), rest.end(), [](char c) { return c >= '0' && c <= '9'; })) return -1;
-    const int d = std::stoi(rest);
-    return d >= 1 ? d : -1;
-}
-
 // How to create each engine. Add new engines here (one line each). The name you type, and the
 // name shown in all output, is the engine's own `name` member, so renaming an engine in its
-// constructor updates the match tool automatically. Engines with a search depth also accept a
-// number after their name ("Alpha-Beta5"); without one, their constructor's default is used.
-struct EngineEntry {
-    std::function<std::unique_ptr<rs::Engine>()> makeDefault;
-    std::function<std::unique_ptr<rs::Engine>(int)> makeWithDepth;  // empty: engine has no depth
-};
+// constructor updates the match tool automatically.
+using EngineFactory = std::function<std::unique_ptr<rs::Engine>()>;
 
-// Options with the given switches; depth 0 keeps MinimaxOptions' default depth.
-rs::MinimaxOptions minimaxOptions(int depth, bool pruning, bool ordering = false) {
+int g_secsPerMove = 0;  // from --time; 0 = keep MinimaxOptions' default
+
+// Options with the given switches and the match's time control.
+rs::MinimaxOptions minimaxOptions(bool pruning, bool ordering) {
     rs::MinimaxOptions o;
-    if (depth > 0) o.depth = depth;
     o.pruning = pruning;
     o.ordering = ordering;
+    if (g_secsPerMove > 0) o.secs_per_move = g_secsPerMove;
     return o;
 }
 
-const std::vector<EngineEntry>& engineTable() {
-    static const std::vector<EngineEntry> table = {
-        {[] { return std::make_unique<rs::Random>(); }, nullptr},
-        // Minimax<N>: the Minimax engine with pruning off; Alpha-Beta<N>: the same engine with pruning on.
-        {[] { return std::make_unique<rs::Minimax>(minimaxOptions(0, false)); },
-         [](int d) { return std::make_unique<rs::Minimax>(minimaxOptions(d, false)); }},
-        {[] { return std::make_unique<rs::Minimax>(minimaxOptions(0, true)); },
-         [](int d) { return std::make_unique<rs::Minimax>(minimaxOptions(d, true)); }},
-        // Alpha-Beta+Ord<N>: alpha-beta with MVV-LVA move ordering.
-        {[] { return std::make_unique<rs::Minimax>(minimaxOptions(0, true, true)); },
-         [](int d) { return std::make_unique<rs::Minimax>(minimaxOptions(d, true, true)); }},
+const std::vector<EngineFactory>& engineTable() {
+    static const std::vector<EngineFactory> table = {
+        [] { return std::make_unique<rs::Random>(); },
+        [] { return std::make_unique<rs::Minimax>(minimaxOptions(false, false)); },  // Minimax
+        [] { return std::make_unique<rs::Minimax>(minimaxOptions(true, false)); },   // Alpha-Beta
+        [] { return std::make_unique<rs::Minimax>(minimaxOptions(true, true)); },    // Alpha-Beta+Ord
     };
     return table;
 }
 
-// The name to type for an engine: its own name with any trailing depth digits removed
-// ("Alpha-Beta3" -> "Alpha-Beta").
-std::string typedName(const EngineEntry& e) {
-    std::string n = e.makeDefault()->name;
-    if (e.makeWithDepth)
-        while (!n.empty() && n.back() >= '0' && n.back() <= '9') n.pop_back();
-    return n;
-}
-
-// Creates an engine from its name (case-insensitive), e.g. "Random", "Alpha-Beta5".
-std::unique_ptr<rs::Engine> makeEngine(const std::string& rawName) {
-    const std::string name = lower(rawName);
-    for (const EngineEntry& e : engineTable()) {
-        const std::string base = lower(typedName(e));
-        if (name == base) return e.makeDefault();
-        if (e.makeWithDepth) {
-            const int d = depthFromName(name, base);
-            if (d > 0) return e.makeWithDepth(d);
-        }
+// Creates an engine from its name (case-insensitive), e.g. "Random", "alpha-beta+ord".
+std::unique_ptr<rs::Engine> makeEngine(const std::string& name) {
+    for (const EngineFactory& make : engineTable()) {
+        auto engine = make();
+        if (lower(engine->name) == lower(name)) return engine;
     }
     return nullptr;
 }
 
-// "Random Minimax<N> Alpha-Beta<N> Alpha-Beta+Ord<N>", for usage messages.
+// "Random Minimax Alpha-Beta Alpha-Beta+Ord", for usage messages.
 std::string availableEngines() {
     std::string out;
-    for (const EngineEntry& e : engineTable()) out += " " + typedName(e) + (e.makeWithDepth ? "<N>" : "");
+    for (const EngineFactory& make : engineTable()) out += " " + make()->name;
     return out;
 }
 
@@ -140,6 +111,7 @@ struct Usage {
     std::uint64_t nodes = 0;
     long moves = 0;
     double seconds = 0.0;
+    long depthSum = 0;  // sum of depth_reached over all moves
 };
 
 GameRecord playGame(rs::Engine& white, rs::Engine& black, Usage& whiteUse, Usage& blackUse, bool verbose) {
@@ -161,6 +133,7 @@ GameRecord playGame(rs::Engine& white, rs::Engine& black, Usage& whiteUse, Usage
         Usage& use = pos.sideToMove() == rs::White ? whiteUse : blackUse;
         use.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         use.nodes += toMove.nodes;
+        use.depthSum += toMove.depth_reached;
         ++use.moves;
 
         rs::MoveList legal;
@@ -337,6 +310,10 @@ int main(int argc, char** argv) {
         const std::string arg = argv[i];
         if (arg == "--games" && i + 1 < argc) games = std::atoi(argv[++i]);
         else if (arg == "--seed" && i + 1 < argc) seed = static_cast<unsigned>(std::strtoul(argv[++i], nullptr, 10));
+        else if (arg == "--time" && i + 1 < argc) {
+            g_secsPerMove = std::atoi(argv[++i]);
+            if (g_secsPerMove < 1) { std::cerr << "--time needs a whole number of seconds >= 1\n"; return 2; }
+        }
         else if (arg == "--csv" && i + 1 < argc) csvFile = argv[++i];
         else if (arg == "--anchor" && i + 1 < argc) anchorName = argv[++i];
         else if (arg == "--verbose") verbose = true;
@@ -346,15 +323,15 @@ int main(int argc, char** argv) {
 
     const std::string available = availableEngines();
     if (names.size() < 2 || games < 1) {
-        std::cerr << "usage: match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--csv FILE] [--anchor NAME] [--verbose]\n"
+        std::cerr << "usage: match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--time S] [--csv FILE] [--anchor NAME] [--verbose]\n"
                   << "engines:" << available << "\n";
         return 2;
     }
     for (const auto& n : names)
         if (!makeEngine(n)) { std::cerr << "unknown engine: " << n << " (choose from:" << available << ")\n"; return 2; }
 
-    // Labels for the report: each engine's own name (e.g. "Alpha-Beta3"); a name that appears
-    // more than once becomes "Minimax1#1", "Minimax1#2", ...
+    // Labels for the report: each engine's own name (e.g. "Alpha-Beta"); a name that appears
+    // more than once becomes "Minimax#1", "Minimax#2", ...
     std::vector<std::string> baseNames;
     for (const auto& n : names) baseNames.push_back(makeEngine(n)->name);
     std::vector<std::string> labels;
@@ -444,6 +421,7 @@ int main(int argc, char** argv) {
 
     auto nodesPerMove = [&](std::size_t i) { return usage[i].moves ? double(usage[i].nodes) / double(usage[i].moves) : 0.0; };
     auto msPerMove = [&](std::size_t i) { return usage[i].moves ? 1000.0 * usage[i].seconds / double(usage[i].moves) : 0.0; };
+    auto depthPerMove = [&](std::size_t i) { return usage[i].moves ? double(usage[i].depthSum) / double(usage[i].moves) : 0.0; };
 
     auto ciText = [&](std::size_t i) -> std::string {
         if (i == anchor) return "anchor";
@@ -451,9 +429,11 @@ int main(int argc, char** argv) {
         return "+-" + std::to_string(std::lround(ratings.ci95[i]));
     };
 
-    std::cout << "\nFinal Elo (" << labels[anchor] << " = 0; " << games << " games per pair; +-95%)\n"
+    std::cout << "\nFinal Elo (" << labels[anchor] << " = 0; " << games << " games per pair; "
+              << (g_secsPerMove > 0 ? std::to_string(g_secsPerMove) + " s per move; " : std::string())
+              << "+-95%)\n"
               << "   #  " << std::left << std::setw(nameWidth) << "engine"
-              << "    Elo     +-95%   games  points   score      W     D     L   nodes/move  ms/move\n";
+              << "    Elo     +-95%   games  points   score      W     D     L   nodes/move  ms/move  depth/move\n";
     for (std::size_t r = 0; r < n; ++r) {
         const std::size_t i = order[r];
         const int played = wins[i] + draws[i] + losses[i];
@@ -463,10 +443,10 @@ int main(int argc, char** argv) {
                   << std::setw(8) << std::setprecision(1) << pts << std::setw(7) << 100.0 * pts / played << "%"
                   << std::setw(7) << wins[i] << std::setw(6) << draws[i] << std::setw(6) << losses[i]
                   << std::setw(13) << std::setprecision(0) << nodesPerMove(i) << std::setw(9) << std::setprecision(2)
-                  << msPerMove(i) << "\n";
+                  << msPerMove(i) << std::setw(12) << std::setprecision(1) << depthPerMove(i) << "\n";
     }
     std::cout << "(fitted to all games at once; draws count 1/2; 1 virtual draw per pair keeps perfect scores finite;\n"
-              << " nodes/move and ms/move are averages over all of an engine's moves in this match)\n";
+              << " nodes/move, ms/move and depth/move are averages over all of an engine's moves in this match)\n";
 
     if (csv.is_open()) {
         csv << "pair,game,white,black,result,reason,plies,seed,white_elo,black_elo\n";
@@ -475,7 +455,7 @@ int main(int argc, char** argv) {
                 << "," << g.reason << "," << g.plies << "," << seed << "," << std::lround(ratings.elo[g.white]) << ","
                 << std::lround(ratings.elo[g.black]) << "\n";
 
-        ratingsCsv << std::fixed << "rank,engine,elo,ci95,anchor,games,points,score,wins,draws,losses,games_per_pair,seed,nodes_per_move,ms_per_move\n";
+        ratingsCsv << std::fixed << "rank,engine,elo,ci95,anchor,games,points,score,wins,draws,losses,games_per_pair,seed,nodes_per_move,ms_per_move,depth_per_move\n";
         for (std::size_t r = 0; r < n; ++r) {
             const std::size_t i = order[r];
             const int played = wins[i] + draws[i] + losses[i];
@@ -486,7 +466,7 @@ int main(int argc, char** argv) {
                        << "," << labels[anchor] << "," << played << "," << std::setprecision(1) << pts << ","
                        << std::setprecision(3) << pts / played << "," << wins[i] << "," << draws[i] << "," << losses[i] << ","
                        << games << "," << seed << "," << std::setprecision(1) << nodesPerMove(i) << ","
-                       << std::setprecision(3) << msPerMove(i) << "\n";
+                       << std::setprecision(3) << msPerMove(i) << "," << std::setprecision(2) << depthPerMove(i) << "\n";
         }
         std::cout << "\nwrote " << csvFile << " (per game, with final Elo) and " << ratingsFile << " (final Elo table)\n";
     }

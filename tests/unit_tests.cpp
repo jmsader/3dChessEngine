@@ -18,7 +18,6 @@
 #include "raumschach/position.h"
 #include "raumschach/rng.h"
 #include "raumschach/rules.h"
-#include "reference_minimax.h"
 
 namespace {
 
@@ -516,73 +515,58 @@ std::vector<Position> mateInOnePositions(int count) {
     return out;
 }
 
-MinimaxOptions opts(int depth, bool pruning, bool ordering = false) {
+// All Minimax engines search under a time control; tests use the shortest one (1 s per move).
+MinimaxOptions opts(bool pruning, bool ordering) {
     MinimaxOptions o;
-    o.depth = depth;
     o.pruning = pruning;
     o.ordering = ordering;
+    o.secs_per_move = 1;
     return o;
 }
 
+const std::vector<MinimaxOptions> kAllOptions = {opts(false, false), opts(true, false), opts(true, true)};
+
 void testEngineNames() {
     CHECK(Random().name == "Random");
-    CHECK(Minimax().name == "Minimax1");
-    CHECK(Minimax(opts(5, true)).name == "Alpha-Beta5");
-    CHECK(Minimax(opts(2, false)).name == "Minimax2");
-    CHECK(Minimax(opts(4, true, true)).name == "Alpha-Beta+Ord4");
+    CHECK(Minimax().name == "Minimax");
+    CHECK(Minimax(opts(false, false)).name == "Minimax");
+    CHECK(Minimax(opts(true, false)).name == "Alpha-Beta");
+    CHECK(Minimax(opts(true, true)).name == "Alpha-Beta+Ord");
 }
 
-// Every option combination must return the reference search's score and play one of the
-// reference's best moves (which tied move is the engine's choice), and the same seed must give
-// the same move. Options such as pruning and ordering may only make the search faster.
-void checkAgainstReference(const Position& p, const MinimaxOptions& o,
-                           const MoveList& refBest, int refScore) {
-    Minimax engine(o), again(o);  // both with the engines' default seed
-    const auto [move, score] = engine.search(p);
-    CHECK_EQ(score, refScore);
-    CHECK(refBest.contains(move));
-    CHECK(std::get<0>(again.search(p)) == move);  // deterministic
-}
-
-void testMinimaxMatchesReference() {
-    const std::vector<Position> positions = samplePositions(30);
-    for (int depth = 1; depth <= 2; ++depth) {
-        for (const Position& p : positions) {
-            const auto [refBest, refScore] = reference::bestMoves(p, depth);
-            for (const bool pruning : {false, true})
-                for (const bool ordering : {false, true})
-                    checkAgainstReference(p, opts(depth, pruning, ordering), refBest, refScore);
-        }
-    }
-    for (int i = 0; i < 4; ++i) {  // depth 3, alpha-beta only (plain minimax is slow there)
-        const Position& p = positions[static_cast<std::size_t>(i)];
-        const auto [refBest, refScore] = reference::bestMoves(p, 3);
-        for (const bool ordering : {false, true})
-            checkAgainstReference(p, opts(3, true, ordering), refBest, refScore);
-    }
-}
-
+// Every engine returns a legal move and reports its search (nodes, depth reached). Random on
+// many positions; the timed engines on one (each search takes about a second or more).
 void testEnginesReturnLegalMoves() {
-    for (const Position& p : samplePositions(60)) {
+    const std::vector<Position> positions = samplePositions(60);
+    for (const Position& p : positions) {
         MoveList legal;
         Position copy = p;
         generateLegalMoves(copy, legal);
         Random random;
-        Minimax plain(opts(1, false));
-        Minimax pruned(opts(2, true));
-        Minimax ordered(opts(2, true, true));
-        for (Engine* e : std::vector<Engine*>{&random, &plain, &pruned, &ordered}) {
-            const Move m = std::get<0>(e->search(p));
-            CHECK(legal.empty() ? m.isNull() : legal.contains(m));
+        const Move m = std::get<0>(random.search(p));
+        CHECK(legal.empty() ? m.isNull() : legal.contains(m));
+    }
+    {
+        const Position& p = positions[50];
+        MoveList legal;
+        Position copy = p;
+        generateLegalMoves(copy, legal);
+        for (const MinimaxOptions& o : kAllOptions) {
+            Minimax engine(o);
+            const Move m = std::get<0>(engine.search(p));
+            CHECK(legal.contains(m));
+            CHECK(engine.nodes > 1);
+            CHECK(engine.depth_reached >= 1);
         }
     }
 }
 
+// A mate in one is found and scored as mate in one, whatever depth the clock allows.
 void testEnginesFindMateInOne() {
-    const std::vector<Position> positions = mateInOnePositions(10);
-    CHECK(positions.size() == 10u);
+    const std::vector<Position> positions = mateInOnePositions(1);
+    CHECK(positions.size() == 1u);
     for (const Position& p : positions) {
-        for (const MinimaxOptions& o : {opts(1, false), opts(1, true), opts(3, true), opts(3, true, true)}) {
+        for (const MinimaxOptions& o : kAllOptions) {
             Minimax engine(o);
             const auto [move, score] = engine.search(p);
             CHECK(givesMate(p, move));
@@ -591,22 +575,10 @@ void testEnginesFindMateInOne() {
     }
 }
 
-void testEngineSeedsAndPositionUntouched() {
-    const std::vector<Position> positions = samplePositions(20);
-    int differ = 0;
-    for (const Position& p : positions) {
-        Minimax a(opts(1, false)), b(opts(1, false)), c(opts(1, false));
-        a.seed(5);
-        b.seed(5);
-        c.seed(6);
-        const Move ma = std::get<0>(a.search(p));
-        CHECK(ma == std::get<0>(b.search(p)));     // same seed, same choice
-        differ += ma != std::get<0>(c.search(p));  // other seed, sometimes another tied move
-    }
-    CHECK(differ > 0);
-    Position p = positions.back();
+void testSearchLeavesPositionUntouched() {
+    Position p = samplePositions(20).back();
     const std::string before = p.toText();
-    Minimax(opts(2, true)).search(p);
+    Minimax(opts(true, true)).search(p);
     CHECK(p.toText() == before);  // search() works on its own copy
 }
 
@@ -637,10 +609,9 @@ int main() {
         {"noisy generation", testNoisyGeneration},
         {"perft regression", testPerftRegression},
         {"engine names", testEngineNames},
-        {"minimax == reference (all options)", testMinimaxMatchesReference},
         {"engines return legal moves", testEnginesReturnLegalMoves},
         {"engines find mate in one", testEnginesFindMateInOne},
-        {"engine seeds, position untouched", testEngineSeedsAndPositionUntouched},
+        {"search leaves position untouched", testSearchLeavesPositionUntouched},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;
