@@ -15,6 +15,8 @@ std::map<rs::PieceType, int> piece_cpawns_map = {
 
 Engine::Engine(std::string name) : name(name) {}
 
+int Engine::piece_cpawns(PieceType pt) { return piece_cpawns_map.at(pt); }
+
 int Engine::eval_material(const Position &pos) {
   int cpawns = 0;
   const Color turn = pos.sideToMove();
@@ -22,8 +24,8 @@ int Engine::eval_material(const Position &pos) {
     Piece piece = pos.pieceAt(sq_idx);
     PieceType piece_type = typeOf(piece);
     if (piece_type != NoPieceType) {
-      int piece_cpawns = piece_cpawns_map.at(piece_type);
-      cpawns += (turn == colorOf(piece)) ? piece_cpawns : -piece_cpawns;
+      int cpawns_here = piece_cpawns(piece_type);
+      cpawns += (turn == colorOf(piece)) ? cpawns_here : -cpawns_here;
     }
   }
 

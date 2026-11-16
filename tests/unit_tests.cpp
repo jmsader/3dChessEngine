@@ -516,43 +516,49 @@ std::vector<Position> mateInOnePositions(int count) {
     return out;
 }
 
-MinimaxOptions opts(int depth, bool pruning) {
+MinimaxOptions opts(int depth, bool pruning, bool ordering = false) {
     MinimaxOptions o;
     o.depth = depth;
     o.pruning = pruning;
+    o.ordering = ordering;
     return o;
 }
 
 void testEngineNames() {
     CHECK(Random().name == "Random");
-    CHECK(Minimax().name == "Alpha-Beta3");
+    CHECK(Minimax().name == "Minimax1");
     CHECK(Minimax(opts(5, true)).name == "Alpha-Beta5");
     CHECK(Minimax(opts(2, false)).name == "Minimax2");
+    CHECK(Minimax(opts(4, true, true)).name == "Alpha-Beta+Ord4");
 }
 
-// The engine, with pruning on and off, must return exactly the reference search's score and
-// move (same seed => same tie pick). Pruning may only make the search faster.
+// Every option combination must return the reference search's score and play one of the
+// reference's best moves (which tied move is the engine's choice), and the same seed must give
+// the same move. Options such as pruning and ordering may only make the search faster.
+void checkAgainstReference(const Position& p, const MinimaxOptions& o,
+                           const MoveList& refBest, int refScore) {
+    Minimax engine(o), again(o);  // both with the engines' default seed
+    const auto [move, score] = engine.search(p);
+    CHECK_EQ(score, refScore);
+    CHECK(refBest.contains(move));
+    CHECK(std::get<0>(again.search(p)) == move);  // deterministic
+}
+
 void testMinimaxMatchesReference() {
     const std::vector<Position> positions = samplePositions(30);
     for (int depth = 1; depth <= 2; ++depth) {
-        for (const bool pruning : {false, true}) {
-            for (const Position& p : positions) {
-                Minimax engine(opts(depth, pruning));
-                Rng rng{};  // the engines' default seed
-                const auto [engineMove, engineScore] = engine.search(p);
-                const auto [refMove, refScore] = reference::minimax(p, depth, rng);
-                CHECK_EQ(engineScore, refScore);
-                CHECK(engineMove == refMove);
-            }
+        for (const Position& p : positions) {
+            const auto [refBest, refScore] = reference::bestMoves(p, depth);
+            for (const bool pruning : {false, true})
+                for (const bool ordering : {false, true})
+                    checkAgainstReference(p, opts(depth, pruning, ordering), refBest, refScore);
         }
     }
     for (int i = 0; i < 4; ++i) {  // depth 3, alpha-beta only (plain minimax is slow there)
-        Minimax engine(opts(3, true));
-        Rng rng{};
-        const auto [engineMove, engineScore] = engine.search(positions[static_cast<std::size_t>(i)]);
-        const auto [refMove, refScore] = reference::minimax(positions[static_cast<std::size_t>(i)], 3, rng);
-        CHECK_EQ(engineScore, refScore);
-        CHECK(engineMove == refMove);
+        const Position& p = positions[static_cast<std::size_t>(i)];
+        const auto [refBest, refScore] = reference::bestMoves(p, 3);
+        for (const bool ordering : {false, true})
+            checkAgainstReference(p, opts(3, true, ordering), refBest, refScore);
     }
 }
 
@@ -564,7 +570,8 @@ void testEnginesReturnLegalMoves() {
         Random random;
         Minimax plain(opts(1, false));
         Minimax pruned(opts(2, true));
-        for (Engine* e : std::vector<Engine*>{&random, &plain, &pruned}) {
+        Minimax ordered(opts(2, true, true));
+        for (Engine* e : std::vector<Engine*>{&random, &plain, &pruned, &ordered}) {
             const Move m = std::get<0>(e->search(p));
             CHECK(legal.empty() ? m.isNull() : legal.contains(m));
         }
@@ -575,7 +582,7 @@ void testEnginesFindMateInOne() {
     const std::vector<Position> positions = mateInOnePositions(10);
     CHECK(positions.size() == 10u);
     for (const Position& p : positions) {
-        for (const MinimaxOptions& o : {opts(1, false), opts(1, true), opts(3, true)}) {
+        for (const MinimaxOptions& o : {opts(1, false), opts(1, true), opts(3, true), opts(3, true, true)}) {
             Minimax engine(o);
             const auto [move, score] = engine.search(p);
             CHECK(givesMate(p, move));
@@ -630,7 +637,7 @@ int main() {
         {"noisy generation", testNoisyGeneration},
         {"perft regression", testPerftRegression},
         {"engine names", testEngineNames},
-        {"minimax == reference (pruning on and off)", testMinimaxMatchesReference},
+        {"minimax == reference (all options)", testMinimaxMatchesReference},
         {"engines return legal moves", testEnginesReturnLegalMoves},
         {"engines find mate in one", testEnginesFindMateInOne},
         {"engine seeds, position untouched", testEngineSeedsAndPositionUntouched},

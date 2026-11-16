@@ -3,8 +3,8 @@
 // Usage:
 //   match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--csv FILE] [--anchor NAME] [--verbose]
 //
-//   engines   Random, Minimax<N>, Alpha-Beta<N>: the engines' own names, in any
-//             capitalization. <N> is the search depth in plies ("Minimax3", "Alpha-Beta5");
+//   engines   Random, Minimax<N>, Alpha-Beta<N>, Alpha-Beta+Ord<N>: the engines' own names, in any
+//             capitalization. <N> is the search depth in plies ("Minimax3", "Alpha-Beta+Ord5");
 //             without it, the engine's own default depth is used. All output uses the
 //             engine's name; the same engine may appear twice ("Minimax1 Minimax1" -> Minimax1#1, Minimax1#2).
 //   --games   games per pair (default 10); colours alternate, so use an even number
@@ -25,6 +25,7 @@
 // between pairs. Every move an engine returns is checked against the legal moves; an engine
 // that returns an illegal or null move in a live position loses that game.
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -72,11 +73,12 @@ struct EngineEntry {
     std::function<std::unique_ptr<rs::Engine>(int)> makeWithDepth;  // empty: engine has no depth
 };
 
-// Options with the given pruning setting; depth 0 keeps MinimaxOptions' default depth.
-rs::MinimaxOptions minimaxOptions(int depth, bool pruning) {
+// Options with the given switches; depth 0 keeps MinimaxOptions' default depth.
+rs::MinimaxOptions minimaxOptions(int depth, bool pruning, bool ordering = false) {
     rs::MinimaxOptions o;
     if (depth > 0) o.depth = depth;
     o.pruning = pruning;
+    o.ordering = ordering;
     return o;
 }
 
@@ -88,6 +90,9 @@ const std::vector<EngineEntry>& engineTable() {
          [](int d) { return std::make_unique<rs::Minimax>(minimaxOptions(d, false)); }},
         {[] { return std::make_unique<rs::Minimax>(minimaxOptions(0, true)); },
          [](int d) { return std::make_unique<rs::Minimax>(minimaxOptions(d, true)); }},
+        // Alpha-Beta+Ord<N>: alpha-beta with MVV-LVA move ordering.
+        {[] { return std::make_unique<rs::Minimax>(minimaxOptions(0, true, true)); },
+         [](int d) { return std::make_unique<rs::Minimax>(minimaxOptions(d, true, true)); }},
     };
     return table;
 }
@@ -115,7 +120,7 @@ std::unique_ptr<rs::Engine> makeEngine(const std::string& rawName) {
     return nullptr;
 }
 
-// "Random Minimax<N> Alpha-Beta<N>", for usage messages.
+// "Random Minimax<N> Alpha-Beta<N> Alpha-Beta+Ord<N>", for usage messages.
 std::string availableEngines() {
     std::string out;
     for (const EngineEntry& e : engineTable()) out += " " + typedName(e) + (e.makeWithDepth ? "<N>" : "");
@@ -130,7 +135,14 @@ struct GameRecord {
     int plies;
 };
 
-GameRecord playGame(rs::Engine& white, rs::Engine& black, bool verbose) {
+// Search effort of one engine over all its moves.
+struct Usage {
+    std::uint64_t nodes = 0;
+    long moves = 0;
+    double seconds = 0.0;
+};
+
+GameRecord playGame(rs::Engine& white, rs::Engine& black, Usage& whiteUse, Usage& blackUse, bool verbose) {
     rs::Position pos;  // one Position for the whole game, so repetition history works
     int plies = 0;
     for (;;) {
@@ -144,7 +156,12 @@ GameRecord playGame(rs::Engine& white, rs::Engine& black, bool verbose) {
         }
 
         rs::Engine& toMove = pos.sideToMove() == rs::White ? white : black;
+        const auto start = std::chrono::steady_clock::now();
         const auto [move, score] = toMove.search(pos);
+        Usage& use = pos.sideToMove() == rs::White ? whiteUse : blackUse;
+        use.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        use.nodes += toMove.nodes;
+        ++use.moves;
 
         rs::MoveList legal;
         rs::generateLegalMoves(pos, legal);
@@ -346,6 +363,8 @@ int main(int argc, char** argv) {
         const auto nth = std::count(baseNames.begin(), baseNames.begin() + static_cast<long>(i) + 1, baseNames[i]);
         labels.push_back(total > 1 ? baseNames[i] + "#" + std::to_string(nth) : baseNames[i]);
     }
+    int nameWidth = 12;  // engine-name column: at least 12, wider for longer names
+    for (const auto& l : labels) nameWidth = std::max(nameWidth, static_cast<int>(l.size()) + 1);
 
     // Default anchor: the (first) random engine if it plays, otherwise the first engine listed.
     std::size_t anchor = 0;
@@ -368,6 +387,7 @@ int main(int argc, char** argv) {
 
     std::vector<PairResult> pairs;
     std::vector<GameRow> rows;
+    std::vector<Usage> usage(names.size());  // per engine, summed over all its games
     int pairIndex = 0;
 
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -388,7 +408,8 @@ int main(int argc, char** argv) {
                     std::cout << "\n" << la << " vs " << lb << ", game " << g + 1 << ": "
                               << (aIsWhite ? la : lb) << " (White) vs " << (aIsWhite ? lb : la) << " (Black)\n";
 
-                const GameRecord r = playGame(white, black, verbose);
+                const GameRecord r = playGame(white, black, aIsWhite ? usage[i] : usage[j],
+                                              aIsWhite ? usage[j] : usage[i], verbose);
                 ++reasons[r.reason];
                 if (r.outcome == Outcome::Draw) ++pr.draws;
                 else if ((r.outcome == Outcome::WhiteWins) == aIsWhite) ++pr.winsA;
@@ -401,7 +422,7 @@ int main(int argc, char** argv) {
             const double score = (pr.winsA + 0.5 * pr.draws) / games;
             std::ostringstream why;
             for (const auto& [reason, count] : reasons) why << (why.tellp() > 0 ? ", " : "") << reason << " " << count;
-            std::cout << std::left << std::setw(12) << la << " vs " << std::setw(12) << lb << "  +" << pr.winsA << " ="
+            std::cout << std::left << std::setw(nameWidth) << la << " vs " << std::setw(nameWidth) << lb << "  +" << pr.winsA << " ="
                       << pr.draws << " -" << pr.winsB << "  score " << std::fixed << std::setprecision(1) << 100.0 * score
                       << "%  Elo " << pairEloText(pr.winsA, pr.draws, pr.winsB) << "   (" << why.str() << ")\n";
             pairs.push_back(pr);
@@ -421,6 +442,9 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < n; ++i) order[i] = i;
     std::stable_sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) { return ratings.elo[x] > ratings.elo[y]; });
 
+    auto nodesPerMove = [&](std::size_t i) { return usage[i].moves ? double(usage[i].nodes) / double(usage[i].moves) : 0.0; };
+    auto msPerMove = [&](std::size_t i) { return usage[i].moves ? 1000.0 * usage[i].seconds / double(usage[i].moves) : 0.0; };
+
     auto ciText = [&](std::size_t i) -> std::string {
         if (i == anchor) return "anchor";
         if (std::isnan(ratings.ci95[i])) return "?";
@@ -428,17 +452,21 @@ int main(int argc, char** argv) {
     };
 
     std::cout << "\nFinal Elo (" << labels[anchor] << " = 0; " << games << " games per pair; +-95%)\n"
-              << "   #  engine          Elo     +-95%   games  points   score      W     D     L\n";
+              << "   #  " << std::left << std::setw(nameWidth) << "engine"
+              << "    Elo     +-95%   games  points   score      W     D     L   nodes/move  ms/move\n";
     for (std::size_t r = 0; r < n; ++r) {
         const std::size_t i = order[r];
         const int played = wins[i] + draws[i] + losses[i];
         const double pts = wins[i] + 0.5 * draws[i];
-        std::cout << std::right << std::setw(4) << r + 1 << "  " << std::left << std::setw(12) << labels[i] << std::right
+        std::cout << std::right << std::setw(4) << r + 1 << "  " << std::left << std::setw(nameWidth) << labels[i] << std::right
                   << std::setw(7) << signedInt(ratings.elo[i]) << std::setw(10) << ciText(i) << std::setw(8) << played
                   << std::setw(8) << std::setprecision(1) << pts << std::setw(7) << 100.0 * pts / played << "%"
-                  << std::setw(7) << wins[i] << std::setw(6) << draws[i] << std::setw(6) << losses[i] << "\n";
+                  << std::setw(7) << wins[i] << std::setw(6) << draws[i] << std::setw(6) << losses[i]
+                  << std::setw(13) << std::setprecision(0) << nodesPerMove(i) << std::setw(9) << std::setprecision(2)
+                  << msPerMove(i) << "\n";
     }
-    std::cout << "(fitted to all games at once; draws count 1/2; 1 virtual draw per pair keeps perfect scores finite)\n";
+    std::cout << "(fitted to all games at once; draws count 1/2; 1 virtual draw per pair keeps perfect scores finite;\n"
+              << " nodes/move and ms/move are averages over all of an engine's moves in this match)\n";
 
     if (csv.is_open()) {
         csv << "pair,game,white,black,result,reason,plies,seed,white_elo,black_elo\n";
@@ -447,7 +475,7 @@ int main(int argc, char** argv) {
                 << "," << g.reason << "," << g.plies << "," << seed << "," << std::lround(ratings.elo[g.white]) << ","
                 << std::lround(ratings.elo[g.black]) << "\n";
 
-        ratingsCsv << std::fixed << "rank,engine,elo,ci95,anchor,games,points,score,wins,draws,losses,games_per_pair,seed\n";
+        ratingsCsv << std::fixed << "rank,engine,elo,ci95,anchor,games,points,score,wins,draws,losses,games_per_pair,seed,nodes_per_move,ms_per_move\n";
         for (std::size_t r = 0; r < n; ++r) {
             const std::size_t i = order[r];
             const int played = wins[i] + draws[i] + losses[i];
@@ -457,7 +485,8 @@ int main(int argc, char** argv) {
                                                                                          : std::to_string(std::lround(ratings.ci95[i])))
                        << "," << labels[anchor] << "," << played << "," << std::setprecision(1) << pts << ","
                        << std::setprecision(3) << pts / played << "," << wins[i] << "," << draws[i] << "," << losses[i] << ","
-                       << games << "," << seed << "\n";
+                       << games << "," << seed << "," << std::setprecision(1) << nodesPerMove(i) << ","
+                       << std::setprecision(3) << msPerMove(i) << "\n";
         }
         std::cout << "\nwrote " << csvFile << " (per game, with final Elo) and " << ratingsFile << " (final Elo table)\n";
     }

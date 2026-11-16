@@ -1,18 +1,41 @@
 #include "raumschach/engine.h"
 #include "raumschach/movegen.h"
 #include "raumschach/rng.h"
+#include "raumschach/types.h"
+#include <algorithm>
 #include <tuple>
 
 namespace rs {
 
+namespace {
+int MVV_LVA(const Position &pos, Move move) {
+  int score = 0;
+  PieceType piece_type_prom_to = move.promotion();
+  PieceType victim_type = typeOf(pos.pieceAt(move.to()));
+  PieceType att_type = typeOf(pos.pieceAt(move.from()));
+
+  if (victim_type != NoPieceType) {
+    score +=
+        10 * Engine::piece_cpawns(victim_type) - Engine::piece_cpawns(att_type);
+  }
+  if (piece_type_prom_to != NoPieceType) {
+    score += Engine::piece_cpawns(piece_type_prom_to);
+  }
+
+  return score;
+}
+} // namespace
+
 std::string Minimax::nameFor(const MinimaxOptions &opts) {
-  return (opts.pruning ? "Alpha-Beta" : "Minimax") + std::to_string(opts.depth);
+  return std::string(opts.pruning ? "Alpha-Beta" : "Minimax") +
+         (opts.ordering ? "+Ord" : "") + std::to_string(opts.depth);
 }
 
 Minimax::Minimax(MinimaxOptions opts) : Engine(nameFor(opts)), opts_(opts) {}
 
 int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
                      int beta) {
+  ++nodes;
   MoveList moves{};
   generateLegalMoves(pos_nd, moves);
   if (moves.empty())
@@ -20,13 +43,19 @@ int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
   if (depth == 0)
     return eval_material(pos_nd);
 
+  if (opts_.ordering) {
+    std::stable_sort(moves.begin(), moves.end(), [&pos_nd](Move a, Move b) {
+      return MVV_LVA(pos_nd, a) > MVV_LVA(pos_nd, b);
+    });
+  }
+
   for (Move move : moves) {
     if (opts_.pruning && alpha >= beta) {
       break;
     }
     pos_nd.makeMove(move);
-    // Without pruning every child gets the full window, so every score is exact
-    // (plain minimax).
+    // Without pruning every child gets the full window, so every score is
+    // exact (plain minimax).
     const int score =
         opts_.pruning
             ? -negamax(pos_nd, depth - 1, ply + 1, -beta, -alpha)
@@ -42,10 +71,17 @@ int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
 
 std::tuple<Move, int> Minimax::search(const Position &pos) {
   Position pos_root = pos; // one copy per search
+  nodes = 1;               // the root; negamax counts the rest
   MoveList moves{};
   generateLegalMoves(pos_root, moves);
   if (moves.empty())
     return {Move{}, pos.inCheck() ? -MATE_CPAWNS : 0};
+
+  if (opts_.ordering) {
+    std::stable_sort(moves.begin(), moves.end(), [&pos_root](Move a, Move b) {
+      return MVV_LVA(pos_root, a) > MVV_LVA(pos_root, b);
+    });
+  }
 
   MoveList best_moves;
   // int best_cpawns = -INF_CPAWNS;

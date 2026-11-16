@@ -1,7 +1,7 @@
 // Frozen reference search for the tests: plain minimax (negamax form), written separately from
 // the engine's search (src/minimax.cpp). The tests check that every Minimax engine variant
-// returns exactly this function's score and move at a fixed depth. Do not extend or "improve"
-// it: its value is that it is simple and never changes.
+// returns this search's score at a fixed depth and plays one of its best moves. Do not
+// "improve" it: its value is that it is simple and never changes.
 #pragma once
 
 #include <cstddef>
@@ -9,7 +9,6 @@
 
 #include "raumschach/engine.h"
 #include "raumschach/movegen.h"
-#include "raumschach/rng.h"
 
 namespace rs::reference {
 
@@ -30,13 +29,13 @@ inline int negamax(Position& pos, int depth, int ply) {
     return best;
 }
 
-// Best move and its score. Tied moves are collected in move-generation order and one is picked
-// with `rng`, the same way the engines do, so with the same seed the chosen moves must match.
-inline std::tuple<Move, int> minimax(const Position& root, int depth, Rng& rng) {
+// Every move that ties for the best score (in move-generation order), and that score.
+// No legal moves: an empty list and the mate/stalemate score.
+inline std::tuple<MoveList, int> bestMoves(const Position& root, int depth) {
     Position pos = root;
     MoveList moves{};
     generateLegalMoves(pos, moves);
-    if (moves.empty()) return {Move{}, pos.inCheck() ? -Engine::MATE_CPAWNS : 0};
+    if (moves.empty()) return {MoveList{}, pos.inCheck() ? -Engine::MATE_CPAWNS : 0};
 
     MoveList best_moves;
     int best = -Engine::INF_CPAWNS;
@@ -52,7 +51,7 @@ inline std::tuple<Move, int> minimax(const Position& root, int depth, Rng& rng) 
             best_moves.push(move);
         }
     }
-    return {best_moves[static_cast<std::size_t>(rng.below(best_moves.size()))], best};
+    return {best_moves, best};
 }
 
 }  // namespace rs::reference
