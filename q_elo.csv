@@ -1,0 +1,4 @@
+rank,engine,elo,ci95,anchor,games,points,score,wins,draws,losses,games_per_pair,seed,nodes_per_move,ms_per_move,depth_per_move
+1,Alpha-Beta+Ord+Q,330,430,Random,4,3.5,0.875,3,1,0,2,1,1818.6,2.097,1.97
+2,Alpha-Beta+Ord,237,403,Random,4,2.5,0.625,2,1,1,2,1,974.2,2.276,2.21
+3,Random,0,0,Random,4,0.0,0.000,0,0,4,2,1,0.0,0.003,0.00

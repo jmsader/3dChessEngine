@@ -1,0 +1,7 @@
+pair,game,white,black,result,reason,plies,seed,white_elo,black_elo
+0,1,Random,Alpha-Beta+Ord,0-1,checkmate,12,1,0,237
+0,2,Alpha-Beta+Ord,Random,1-0,checkmate,11,1,237,0
+1,1,Random,Alpha-Beta+Ord+Q,0-1,checkmate,46,1,0,330
+1,2,Alpha-Beta+Ord+Q,Random,1-0,checkmate,27,1,330,0
+2,1,Alpha-Beta+Ord,Alpha-Beta+Ord+Q,0-1,checkmate,302,1,237,330
+2,2,Alpha-Beta+Ord+Q,Alpha-Beta+Ord,1/2-1/2,50-move rule,489,1,330,237

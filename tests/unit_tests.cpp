@@ -515,16 +515,18 @@ std::vector<Position> mateInOnePositions(int count) {
     return out;
 }
 
-// All Minimax engines search under a time control; tests use the shortest one (1 s per move).
-MinimaxOptions opts(bool pruning, bool ordering) {
+// All Minimax engines search under a time control; tests use a short one (100 ms per move).
+MinimaxOptions opts(bool pruning, bool ordering, bool qscence = false) {
     MinimaxOptions o;
     o.pruning = pruning;
     o.ordering = ordering;
-    o.secs_per_move = 1;
+    o.qscence = qscence;
+    o.ms_per_move = 100;
     return o;
 }
 
-const std::vector<MinimaxOptions> kAllOptions = {opts(false, false), opts(true, false), opts(true, true)};
+const std::vector<MinimaxOptions> kAllOptions = {opts(false, false), opts(true, false), opts(true, true),
+                                                 opts(true, true, true)};
 
 void testEngineNames() {
     CHECK(Random().name == "Random");
@@ -532,10 +534,11 @@ void testEngineNames() {
     CHECK(Minimax(opts(false, false)).name == "Minimax");
     CHECK(Minimax(opts(true, false)).name == "Alpha-Beta");
     CHECK(Minimax(opts(true, true)).name == "Alpha-Beta+Ord");
+    CHECK(Minimax(opts(true, true, true)).name == "Alpha-Beta+Ord+Q");
 }
 
 // Every engine returns a legal move and reports its search (nodes, depth reached). Random on
-// many positions; the timed engines on one (each search takes about a second or more).
+// many positions; the timed engines on one (each search takes at least its time budget).
 void testEnginesReturnLegalMoves() {
     const std::vector<Position> positions = samplePositions(60);
     for (const Position& p : positions) {

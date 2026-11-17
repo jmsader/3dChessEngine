@@ -1,9 +1,9 @@
 // match: round-robin between two or more engines; every pair plays the same number of games.
 //
 // Usage:
-//   match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--time S] [--csv FILE] [--anchor NAME] [--verbose]
+//   match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--time MS] [--csv FILE] [--anchor NAME] [--verbose]
 //
-//   engines   Random, Minimax, Alpha-Beta, Alpha-Beta+Ord: the engines' own names, in any
+//   engines   Random, Minimax, Alpha-Beta, Alpha-Beta+Ord, Alpha-Beta+Ord+Q: the engines' own names, in any
 //             capitalization. All output uses the engine's name; the same engine may appear
 //             twice ("Minimax Minimax" -> Minimax#1, Minimax#2).
 //   --games   games per pair (default 10); colours alternate, so use an even number
@@ -12,8 +12,8 @@
 //             share a random sequence (e.g. both sides of "Minimax Minimax" choose independently).
 //             Searches are timed, so results also depend on machine speed and load: the same
 //             command can give different games on another run.
-//   --time    global time control: whole seconds per move for every Minimax engine (sets
-//             MinimaxOptions::secs_per_move; without it, the engines' default is used)
+//   --time    global time control: milliseconds per move for every Minimax engine (sets
+//             MinimaxOptions::ms_per_move; without it, the engines' default is used)
 //   --csv     write one row per game to FILE, including both engines' final Elo, and the
 //             final ratings to FILE with "_elo" before the extension (e.g. results_elo.csv)
 //   --anchor  engine whose Elo is fixed at 0 (default: random if it plays, else the first engine listed)
@@ -61,14 +61,15 @@ std::string lower(std::string s) {
 // constructor updates the match tool automatically.
 using EngineFactory = std::function<std::unique_ptr<rs::Engine>()>;
 
-int g_secsPerMove = 0;  // from --time; 0 = keep MinimaxOptions' default
+int g_msPerMove = 0;  // from --time, in milliseconds; 0 = keep MinimaxOptions' default
 
 // Options with the given switches and the match's time control.
-rs::MinimaxOptions minimaxOptions(bool pruning, bool ordering) {
+rs::MinimaxOptions minimaxOptions(bool pruning, bool ordering, bool qscence = false) {
     rs::MinimaxOptions o;
     o.pruning = pruning;
     o.ordering = ordering;
-    if (g_secsPerMove > 0) o.secs_per_move = g_secsPerMove;
+    o.qscence = qscence;
+    if (g_msPerMove > 0) o.ms_per_move = g_msPerMove;
     return o;
 }
 
@@ -78,6 +79,7 @@ const std::vector<EngineFactory>& engineTable() {
         [] { return std::make_unique<rs::Minimax>(minimaxOptions(false, false)); },  // Minimax
         [] { return std::make_unique<rs::Minimax>(minimaxOptions(true, false)); },   // Alpha-Beta
         [] { return std::make_unique<rs::Minimax>(minimaxOptions(true, true)); },    // Alpha-Beta+Ord
+        [] { return std::make_unique<rs::Minimax>(minimaxOptions(true, true, true)); },  // Alpha-Beta+Ord+Q
     };
     return table;
 }
@@ -91,7 +93,7 @@ std::unique_ptr<rs::Engine> makeEngine(const std::string& name) {
     return nullptr;
 }
 
-// "Random Minimax Alpha-Beta Alpha-Beta+Ord", for usage messages.
+// "Random Minimax Alpha-Beta Alpha-Beta+Ord Alpha-Beta+Ord+Q", for usage messages.
 std::string availableEngines() {
     std::string out;
     for (const EngineFactory& make : engineTable()) out += " " + make()->name;
@@ -311,8 +313,8 @@ int main(int argc, char** argv) {
         if (arg == "--games" && i + 1 < argc) games = std::atoi(argv[++i]);
         else if (arg == "--seed" && i + 1 < argc) seed = static_cast<unsigned>(std::strtoul(argv[++i], nullptr, 10));
         else if (arg == "--time" && i + 1 < argc) {
-            g_secsPerMove = std::atoi(argv[++i]);
-            if (g_secsPerMove < 1) { std::cerr << "--time needs a whole number of seconds >= 1\n"; return 2; }
+            g_msPerMove = std::atoi(argv[++i]);
+            if (g_msPerMove < 1) { std::cerr << "--time needs a whole number of milliseconds >= 1\n"; return 2; }
         }
         else if (arg == "--csv" && i + 1 < argc) csvFile = argv[++i];
         else if (arg == "--anchor" && i + 1 < argc) anchorName = argv[++i];
@@ -323,7 +325,7 @@ int main(int argc, char** argv) {
 
     const std::string available = availableEngines();
     if (names.size() < 2 || games < 1) {
-        std::cerr << "usage: match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--time S] [--csv FILE] [--anchor NAME] [--verbose]\n"
+        std::cerr << "usage: match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--time MS] [--csv FILE] [--anchor NAME] [--verbose]\n"
                   << "engines:" << available << "\n";
         return 2;
     }
@@ -430,7 +432,7 @@ int main(int argc, char** argv) {
     };
 
     std::cout << "\nFinal Elo (" << labels[anchor] << " = 0; " << games << " games per pair; "
-              << (g_secsPerMove > 0 ? std::to_string(g_secsPerMove) + " s per move; " : std::string())
+              << (g_msPerMove > 0 ? std::to_string(g_msPerMove) + " ms per move; " : std::string())
               << "+-95%)\n"
               << "   #  " << std::left << std::setw(nameWidth) << "engine"
               << "    Elo     +-95%   games  points   score      W     D     L   nodes/move  ms/move  depth/move\n";
