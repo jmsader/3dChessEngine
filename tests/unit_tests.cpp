@@ -516,17 +516,18 @@ std::vector<Position> mateInOnePositions(int count) {
 }
 
 // All Minimax engines search under a time control; tests use a short one (100 ms per move).
-MinimaxOptions opts(bool pruning, bool ordering, bool qscence = false) {
+MinimaxOptions opts(bool pruning, bool ordering, bool qscence = false, bool tt = false) {
     MinimaxOptions o;
     o.pruning = pruning;
     o.ordering = ordering;
     o.qscence = qscence;
+    o.tt = tt;
     o.ms_per_move = 100;
     return o;
 }
 
 const std::vector<MinimaxOptions> kAllOptions = {opts(false, false), opts(true, false), opts(true, true),
-                                                 opts(true, true, true)};
+                                                 opts(true, true, true), opts(true, true, true, true)};
 
 void testEngineNames() {
     CHECK(Random().name == "Random");
@@ -535,6 +536,7 @@ void testEngineNames() {
     CHECK(Minimax(opts(true, false)).name == "Alpha-Beta");
     CHECK(Minimax(opts(true, true)).name == "Alpha-Beta+Ord");
     CHECK(Minimax(opts(true, true, true)).name == "Alpha-Beta+Ord+Q");
+    CHECK(Minimax(opts(true, true, true, true)).name == "Alpha-Beta+Ord+Q+TT");
 }
 
 // Every engine returns a legal move and reports its search (nodes, depth reached). Random on

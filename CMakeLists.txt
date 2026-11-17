@@ -45,6 +45,9 @@ target_link_libraries(selfplay PRIVATE raumschach_core)
 add_executable(match tools/match.cpp)
 target_link_libraries(match PRIVATE raumschach_core)
 
+add_executable(gendata tools/gendata.cpp)
+target_link_libraries(gendata PRIVATE raumschach_core)
+
 # ---------------------------------------------------------------- tests
 enable_testing()
 add_executable(unit_tests tests/unit_tests.cpp)

@@ -1,10 +1,25 @@
+# C++ build output
 build/
 build-*/
 out/
-.vs/
 *.o
 *.a
 *.obj
 *.exe
+
+# Editors and OS
+.vs/
 .vscode/
 compile_flags.txt
+.DS_Store
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Generated data and trained models (regenerate with gendata / tools/train.py)
+data/
+weights/
+*.pt

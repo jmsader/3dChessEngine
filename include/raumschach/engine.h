@@ -1,11 +1,24 @@
 #pragma once
 #include "raumschach/position.h"
 #include "raumschach/rng.h"
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <tuple>
+#include <vector>
 
 namespace rs {
+
+// One transposition-table slot: what the search learned about one position.
+struct TTentry {
+  std::uint64_t key =
+      0;          // full pos.key(), to confirm the slot holds this position
+  int depth = -1; // depth of the search that stored it (-1 = empty)
+  int score =
+      0; // mate scores stored as distance from this position, not the root
+  bool is_exact = false; // score is exact (not a bound): safe to reuse
+  Move best_move{};      // best move found; tried first next time
+};
 
 class Engine {
 public:
@@ -54,6 +67,7 @@ struct MinimaxOptions {
   bool ordering = false; // MVV-LVA move ordering
   int ms_per_move = 100;
   bool qscence = false;
+  bool tt = false; // transposition table (best move first; reuse exact scores)
 };
 
 class Minimax : public Engine {
@@ -62,15 +76,21 @@ public:
   std::tuple<Move, int> search(const Position &pos) override;
   const MinimaxOptions &options() const { return opts_; }
 
-  // The engine's name for a set of options: "Minimax", "Alpha-Beta" or
-  // "Alpha-Beta+Ord".
+  // The engine's name for a set of options, e.g. "Minimax", "Alpha-Beta",
+  // "Alpha-Beta+Ord+Q+TT".
   static std::string nameFor(const MinimaxOptions &opts);
 
 private:
   MinimaxOptions opts_;
+  static constexpr std::size_t TT_SIZE = std::size_t{1}
+                                         << 20; // slots (power of 2)
+  std::vector<TTentry> tt_; // TT_SIZE slots when opts_.tt, else empty
   int negamax(Position &pos, int depth, int ply, int alpha, int beta);
   int quiescence(Position &pos, int alpha, int beta);
   int MVV_LVA(const Position &pos, Move move);
+  static int scoreToTT(int score,
+                       int ply); // mate score: root distance -> node distance
+  static int scoreFromTT(int score, int ply); // and back
 };
 
 } // namespace rs
