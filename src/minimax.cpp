@@ -1,23 +1,66 @@
 #include "raumschach/engine.h"
+#include "raumschach/model.h"
 #include "raumschach/movegen.h"
 #include "raumschach/rng.h"
 #include "raumschach/types.h"
 #include <algorithm>
 #include <ctime>
+#include <stdexcept>
 #include <tuple>
+#include <utility>
 
 namespace rs {
+
+namespace {
+// Name suffix for the evaluation, from the weights file's name. tools/train.py
+// writes <engine>_<ms>ms_linear.txt or <engine>_<ms>ms_mlp.txt, so e.g.
+// weights/Alpha-Beta+Ord+Q_10ms_mlp.txt gives "+NN_10": the model kind and the
+// time control of its training data. The constructor checks that the loaded
+// file really is that kind of model.
+std::string evalSuffix(const std::string &weights_path) {
+  if (weights_path.empty())
+    return ""; // material
+  std::string suffix =
+      weights_path.find("_mlp") != std::string::npos ? "+NN" : "+LIN";
+  const std::size_t ms = weights_path.rfind("ms_");
+  std::size_t digits = ms;
+  while (ms != std::string::npos && digits > 0 &&
+         weights_path[digits - 1] >= '0' && weights_path[digits - 1] <= '9')
+    --digits;
+  if (ms != std::string::npos && digits < ms && digits > 0 &&
+      weights_path[digits - 1] == '_')
+    suffix += "_" + weights_path.substr(digits, ms - digits);
+  return suffix;
+}
+} // namespace
 
 std::string Minimax::nameFor(const MinimaxOptions &opts) {
   // No depth in the name: the time control sets the depth.
   return std::string(opts.pruning ? "Alpha-Beta" : "Minimax") +
          (opts.ordering ? "+Ord" : "") + (opts.qscence ? "+Q" : "") +
-         (opts.tt ? "+TT" : "");
+         (opts.tt ? "+TT" : "") + evalSuffix(opts.eval_weights_path);
 }
 
 Minimax::Minimax(MinimaxOptions opts) : Engine(nameFor(opts)), opts_(opts) {
   if (opts_.tt)
     tt_.assign(TT_SIZE, TTentry{}); // allocated once; kept between moves
+  // Choose the evaluation once: the learned model (loaded here, not per call)
+  // or plain material.
+  if (opts_.eval_weights_path.empty()) {
+    evaluate_pos_ = &Engine::eval_material;
+  } else {
+    Model model(opts_.eval_weights_path);
+    // nameFor named the evaluation from the file name; make sure it's right.
+    const bool named_linear =
+        evalSuffix(opts_.eval_weights_path).rfind("+LIN", 0) == 0;
+    if (named_linear != (model.num_layers() == 1))
+      throw std::runtime_error("weights file " + opts_.eval_weights_path +
+                               (named_linear ? " is named like a linear model"
+                                             : " is named like an MLP") +
+                               " but has " +
+                               std::to_string(model.num_layers()) + " layers");
+    evaluate_pos_ = std::move(model);
+  }
 }
 
 // Mate scores count plies from the root (MATE - ply), but a table entry can be
@@ -72,7 +115,7 @@ int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
   }
   if (depth == 0) {
     return opts_.qscence ? quiescence(pos_nd, alpha, beta)
-                         : eval_material(pos_nd);
+                         : evaluate_pos_(pos_nd);
   }
 
   if (opts_.ordering) {
@@ -126,9 +169,23 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
       0; // read by the loop condition before the first depth (0 = not a mate)
   int iter_depth = 1;
   const std::clock_t start_time = std::clock();
-  while (((std::clock() - start_time) / (CLOCKS_PER_SEC / 1000.)) * 2 <
-             double(opts_.ms_per_move) &&
-         !is_mate_cpawns(alpha)) {
+  const auto elapsed_ms = [start_time] { // CPU time since the search started
+    return static_cast<double>(std::clock() - start_time) * 1000.0 /
+           CLOCKS_PER_SEC;
+  };
+  // Start a new depth only if it is predicted to finish within the time
+  // budget: it should take about as long as the last depth, times how much
+  // the last depth grew over the one before (capped, since the first depths
+  // are too short to measure reliably).
+  double prev_depth_ms = 0.0, last_depth_ms = 0.0;
+  const auto next_depth_fits = [&] {
+    const double growth = prev_depth_ms > 0.0
+                              ? std::min(last_depth_ms / prev_depth_ms, MAX_GROWTH)
+                              : MAX_GROWTH;
+    return elapsed_ms() + last_depth_ms * growth <= opts_.ms_per_move;
+  };
+  while ((iter_depth == 1 || next_depth_fits()) && !is_mate_cpawns(alpha)) {
+    const double depth_start_ms = elapsed_ms();
     MoveList moves{};
     generateLegalMoves(pos_root, moves);
     if (moves.empty())
@@ -142,7 +199,7 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
     }
     // the previous depth's best move goes first at the root.
     // if (!best_moves.empty())
-    //   moveToFront(moves, best_moves[0]); 
+    //   moveToFront(moves, best_moves[0]);
 
     // int best_cpawns = -INF_CPAWNS;
     alpha = -INF_CPAWNS;
@@ -160,6 +217,8 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
         best_moves.push(move);
       }
     }
+    prev_depth_ms = last_depth_ms;
+    last_depth_ms = elapsed_ms() - depth_start_ms;
     depth_reached = iter_depth; // this depth finished
     ++iter_depth;
   }
@@ -177,7 +236,7 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
 int Minimax::quiescence(Position &pos, int alpha, int beta) {
   ++nodes;
 
-  int curr_val = eval_material(pos);
+  int curr_val = evaluate_pos_(pos);
   if (curr_val >= beta) {
     return curr_val;
   }

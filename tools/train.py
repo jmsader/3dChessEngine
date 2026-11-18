@@ -16,18 +16,22 @@ Input files: CSVs from tools/gendata (one row per position):
 import argparse
 import random
 from pathlib import Path
-import csv
 import numpy as np
+import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-import math
 
 PIECES = "PNBRUQK"  # piece letters in a fixed order -> 7 types
 NUM_SQUARES = 125
 NUM_FEATURES = (
     2 * len(PIECES) * NUM_SQUARES
 )  # (own/opponent) x 7 types x 125 squares = 1750
+
+# Training settings, edited here rather than given on the command line.
+LEARNING_RATE = {"linear": 1e-2, "mlp": 1e-3}  # per model kind (tried on the 1 ms data)
+EPOCHS = 15  # the best epoch (lowest validation loss) is the one exported
+OPT_LAYER_OUTPUT_SIZES = (32, 16)
 
 
 # --------------------------------------------------------------------------- 1. config
@@ -47,9 +51,7 @@ def parse_args():
         default=400.0,
         help="score scale K in centipawns (see make_label)",
     )
-    p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=1024)
-    p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument(
         "--weight-decay",
         type=float,
@@ -70,33 +72,28 @@ def set_seed(seed):
 
 
 # --------------------------------------------------------------------------- 2. data
-def load_rows(files):
-    """Read every CSV into one list of rows (dicts or tuples, your choice).
+# Positions are stored compactly: instead of a 1750-long one-hot vector, each position keeps
+# only the indices of its active features (one per piece, at most MAX_PIECES), padded with
+# NUM_FEATURES. A batch is turned into one-hot vectors only when the model needs it
+# (to_one_hot), so millions of positions fit in memory: ~100 bytes each instead of 7 KB.
+MAX_PIECES = 40  # the start position has the most pieces, and captures only remove them
 
-    Tip: game numbers restart at 0 in each file, so make a game id that is unique across
-    files (e.g. (file index, game)) - you need it for the train/val split.
-    """
-    rows = []
-    for file_index, path in enumerate(files):
-        with open(path) as f:
-            for row in csv.DictReader(f):
-                rows.append(
-                    {
-                        "board": row["board"],
-                        "stm": row["stm"],
-                        "score": int(row["score"]),
-                        "result": float(row["result"]),
-                        "game_id": (
-                            file_index,
-                            int(row["game"]),
-                        ),  # games restart at 0 in each file
-                    }
-                )
-    return rows
+# Feature offset (owner * 7*125 + type * 125) of each piece letter, seen from White:
+# uppercase = side to move ("own"), lowercase = opponent. -1 for an empty square.
+CHAR_OFFSET = np.full(256, -1, dtype=np.int32)
+for _type, _ch in enumerate(PIECES):
+    CHAR_OFFSET[ord(_ch)] = 0 * len(PIECES) * NUM_SQUARES + _type * NUM_SQUARES
+    CHAR_OFFSET[ord(_ch.lower())] = 1 * len(PIECES) * NUM_SQUARES + _type * NUM_SQUARES
+SWAP_CASE = np.arange(256, dtype=np.uint8)  # byte -> the same letter in the other case
+for _ch in PIECES:
+    SWAP_CASE[ord(_ch)], SWAP_CASE[ord(_ch.lower())] = ord(_ch.lower()), ord(_ch)
 
 
-def encode(board, stm):
-    """Board string -> float32 vector of NUM_FEATURES (one-hot), from the side to move's view.
+def encode_indices(boards, stms):
+    """Boards -> active feature indices, from the side to move's view, for many positions at once.
+
+    boards: list of N board strings (125 chars); stms: N side-to-move letters ("w" / "b").
+    Returns an (N, MAX_PIECES) int16 array: each row's feature indices, padded with NUM_FEATURES.
 
     Side-to-move view means the model always sees "my pieces" and "opponent pieces", never
     White/Black. When Black is to move:
@@ -106,28 +103,49 @@ def encode(board, stm):
 
     Feature index for a piece: owner * 7*125 + type * 125 + square
       owner 0 = side to move, 1 = opponent; type = PIECES.index(letter.upper()).
+    The C++ engine (src/model.cpp) uses exactly the same encoding.
     """
-    x = np.zeros(NUM_FEATURES, dtype=np.float32)
-    black_to_move = stm == "b"
-    for sq, ch in enumerate(board):
-        if ch == ".":
-            continue
-        is_white = ch.isupper()
-        owner = 0 if is_white != black_to_move else 1  # 0 = side to move, 1 = opponent
-        square = (
-            NUM_SQUARES - 1 - sq if black_to_move else sq
-        )  # flip board to train equally
-        piece_type = PIECES.index(ch.upper())
-        x[owner * len(PIECES) * NUM_SQUARES + piece_type * NUM_SQUARES + square] = (
-            1.0  # 3d indexing
-        )
+    b = np.frombuffer("".join(boards).encode("ascii"), dtype=np.uint8)
+    b = b.reshape(len(boards), NUM_SQUARES).copy()
+    black = np.asarray(stms) == "b"
+    b[black] = SWAP_CASE[b[black, ::-1]]  # flip (sq -> 124 - sq) and swap colours
+    offsets = CHAR_OFFSET[b]  # (N, 125)
+    features = np.where(offsets >= 0, offsets + np.arange(NUM_SQUARES), NUM_FEATURES)
+    features.sort(axis=1)  # real features first, padding (NUM_FEATURES) last
+    return features[:, :MAX_PIECES].astype(np.int16)
 
-    return x
+
+def to_one_hot(features):
+    """(B, MAX_PIECES) feature indices -> (B, NUM_FEATURES) float32 one-hot rows."""
+    x = torch.zeros(len(features), NUM_FEATURES + 1)  # the extra column absorbs the padding
+    x.scatter_(1, features.long(), 1.0)
+    return x[:, :NUM_FEATURES]
+
+
+def load_data(files):
+    """Read every CSV into NumPy arrays, one entry per position:
+    features (N, MAX_PIECES), score (N,), result (N,), game_id (N,).
+
+    Game numbers restart at 0 in each file, so game_id = file_index * 1,000,000 + game is
+    unique across files - the train/validation split needs that.
+    """
+    parts = []
+    for file_index, path in enumerate(files):
+        df = pd.read_csv(path, dtype={"board": str, "stm": str})
+        parts.append(
+            {
+                "features": encode_indices(df["board"].tolist(), df["stm"].to_numpy()),
+                "score": df["score"].to_numpy(np.float32),
+                "result": df["result"].to_numpy(np.float32),
+                "game_id": file_index * 1_000_000 + df["game"].to_numpy(np.int64),
+            }
+        )
+    return {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
 
 
 def sigmoid(x):
-    """1 / (1 + e^-x): maps any number to (0, 1). (The math module has no sigmoid.)"""
-    return 1.0 / (1.0 + math.exp(-x))
+    """1 / (1 + e^-x): maps any number (or NumPy array) to (0, 1)."""
+    return 1.0 / (1.0 + np.exp(-x))
 
 
 def make_label(score, result, res_w, k):
@@ -135,48 +153,51 @@ def make_label(score, result, res_w, k):
 
     sigmoid(score / k) turns centipawns into "probability of winning": 0 cp -> 0.5,
     +k cp -> about 0.73. A mix stays a valid probability, so BCE loss works.
+    Works on single numbers and on whole NumPy arrays.
     """
     return res_w * result + (1 - res_w) * sigmoid(score / k)
 
 
 class PositionDataset(Dataset):
-    """Pre-encode everything once in __init__ (fast), then index into the arrays."""
+    """The positions at `rows` (indices into the arrays from load_data), with their labels."""
 
-    def __init__(self, rows, res_w, k):
-        # One row per position: x is the encoded board, y its label.
-        self.x = np.stack(
-            [encode(r["board"], r["stm"]) for r in rows]
-        )  # (N, NUM_FEATURES)
-        self.y = np.array(
-            [make_label(r["score"], r["result"], res_w, k) for r in rows],
-            dtype=np.float32,
+    def __init__(self, data, rows, res_w, k):
+        self.features = data["features"][rows]  # (N, MAX_PIECES) int16
+        self.y = make_label(data["score"][rows], data["result"][rows], res_w, k).astype(
+            np.float32
         )  # (N,)
 
     def __len__(self):
         return len(self.y)
 
     def __getitem__(self, r):
-        # Position r as tensors: its encoded board (1750,) and its label (a scalar).
-        x = torch.from_numpy(self.x[r])  # no copy: shares memory with self.x
-        y = torch.tensor(self.y[r])  # 0-dim float32 tensor
+        # Position r: its feature indices (MAX_PIECES,) and its label (a scalar).
+        return torch.from_numpy(self.features[r]), torch.tensor(self.y[r])
 
-        return x, y
+    def __getitems__(self, rows):
+        # A whole batch at once (the DataLoader uses this when it exists): much faster than
+        # fetching millions of positions one by one.
+        rows = np.asarray(rows)
+        return torch.from_numpy(self.features[rows]), torch.from_numpy(self.y[rows])
 
 
-def split_by_game(rows, val_fraction, seed):
-    """Train/validation split by GAME, not by position.
+def one_hot_batch(batch):
+    """DataLoader collate_fn: a batch from __getitems__ -> (one-hot inputs, labels)."""
+    features, y = batch
+    return to_one_hot(features), y
+
+
+def split_by_game(game_id, val_fraction, seed):
+    """Train/validation split by GAME, not by position. Returns two arrays of row indices.
 
     Positions from one game are highly correlated (and share the same result), so a
     position-level split leaks information and makes validation look better than it is.
     """
-    game_ids = sorted({r["game_id"] for r in rows})
-    random.Random(seed).shuffle(game_ids)  # reproducible
-    n_val = int(len(game_ids) * val_fraction)
-    val_games = set(game_ids[:n_val])
-
-    train_rows = [r for r in rows if r["game_id"] not in val_games]
-    val_rows = [r for r in rows if r["game_id"] in val_games]
-    return train_rows, val_rows
+    games = sorted(set(game_id.tolist()))
+    random.Random(seed).shuffle(games)  # reproducible
+    n_val = int(len(games) * val_fraction)
+    is_val = np.isin(game_id, games[:n_val])
+    return np.flatnonzero(~is_val), np.flatnonzero(is_val)
 
 
 # --------------------------------------------------------------------------- 3. model
@@ -184,10 +205,19 @@ def build_model(kind):
     """The model outputs one number per position: a logit, i.e. eval_cp / K.
 
     linear: nn.Linear(NUM_FEATURES, 1)  -> its weights * K are piece-square values in cp
-    mlp:    Linear(NUM_FEATURES, 64) -> ReLU -> Linear(64, 32) -> ReLU -> Linear(32, 1)
+    mlp:    Linear(NUM_FEATURES, h1) -> ReLU -> Linear(h1, h2) -> ReLU -> Linear(h2, 1),
+            with (h1, h2) = OPT_LAYER_OUTPUT_SIZES
     """
     if kind == "linear":
         return nn.Sequential(nn.Linear(NUM_FEATURES, 1))
+    elif kind == "mlp":
+        return nn.Sequential(
+            nn.Linear(NUM_FEATURES, OPT_LAYER_OUTPUT_SIZES[0]),
+            nn.ReLU(),
+            nn.Linear(OPT_LAYER_OUTPUT_SIZES[0], OPT_LAYER_OUTPUT_SIZES[1]),
+            nn.ReLU(),
+            nn.Linear(OPT_LAYER_OUTPUT_SIZES[1], 1),
+        )
     else:
         raise ValueError(f"unknown model kind: {kind}!")
 
@@ -274,28 +304,33 @@ def main():
     args = parse_args()
     set_seed(args.seed)
 
-    rows = load_rows(args.files)
-    train_rows, val_rows = split_by_game(rows, args.val_fraction, args.seed)
-    train_set = PositionDataset(train_rows, args.res_w, args.k)
-    val_set = PositionDataset(val_rows, args.res_w, args.k)
+    data = load_data(args.files)
+    train_rows, val_rows = split_by_game(data["game_id"], args.val_fraction, args.seed)
+    train_set = PositionDataset(data, train_rows, args.res_w, args.k)
+    val_set = PositionDataset(data, val_rows, args.res_w, args.k)
+    del data  # the datasets keep their own copies
     print(f"{len(train_set)} training / {len(val_set)} validation positions")
 
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=args.batch_size)
+    train_loader = DataLoader(
+        train_set, batch_size=args.batch_size, shuffle=True, collate_fn=one_hot_batch
+    )
+    val_loader = DataLoader(val_set, batch_size=args.batch_size, collate_fn=one_hot_batch)
 
     model = build_model(args.model_kind)
     loss_fn = (
         nn.BCEWithLogitsLoss()
     )  # targets are probabilities in [0, 1]; model gives logits
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        model.parameters(),
+        lr=LEARNING_RATE[args.model_kind],
+        weight_decay=args.weight_decay,
     )
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(exist_ok=True)
     final_model_path = out_dir / "final_model.pt"
     best_val = float("inf")
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, EPOCHS + 1):
         train_loss = train_one_epoch(model, train_loader, loss_fn, optimizer)
         val_loss = evaluate(model, val_loader, loss_fn)
         print(f"epoch {epoch}: train {train_loss:.3f}  val {val_loss:.3f}")

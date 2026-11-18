@@ -19,7 +19,7 @@ venv/
 __pycache__/
 *.pyc
 
-# Generated data and trained models (regenerate with gendata / tools/train.py)
+# Generated data and trained models (regenerate with the tools/ scripts)
 data/
 weights/
 *.pt

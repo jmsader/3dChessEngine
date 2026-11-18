@@ -1,21 +1,21 @@
 #include "raumschach/engine.h"
 #include "raumschach/position.h"
 #include "raumschach/types.h"
+#include <array>
 #include <cstdint>
-#include <map>
+#include <utility>
 
 namespace rs {
 
 namespace {
-std::map<rs::PieceType, int> piece_cpawns_map = {
-    {Pawn, 100},   {Unicorn, 140}, {Rook, 245}, {Bishop, 295},
-    {Knight, 320}, {Queen, 980},   {King, 0}};
-// constexpr it.. but cant use dict. Determined from howard36 (2026)
+// Indexed by PieceType: none, P, N, B, R, U, Q, K. Determined from howard36 (2026)
+constexpr std::array<int, kNumPieceTypes> piece_cpawns_table = {
+    0, 100, 320, 295, 245, 140, 980, 0};
 } // namespace
 
-Engine::Engine(std::string name) : name(name) {}
+Engine::Engine(std::string engine_name) : name(std::move(engine_name)) {}
 
-int Engine::piece_cpawns(PieceType pt) { return piece_cpawns_map.at(pt); }
+int Engine::piece_cpawns(PieceType pt) { return piece_cpawns_table[pt]; }
 
 int Engine::eval_material(const Position &pos) {
   int cpawns = 0;
@@ -28,7 +28,6 @@ int Engine::eval_material(const Position &pos) {
       cpawns += (turn == colorOf(piece)) ? cpawns_here : -cpawns_here;
     }
   }
-
   return cpawns;
 }
 

@@ -3,6 +3,7 @@
 #include "raumschach/rng.h"
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -31,7 +32,7 @@ public:
   int depth_reached = 0;
   // may not need
 
-  Engine(std::string name);
+  Engine(std::string engine_name);
   virtual std::tuple<Move, int> search(const Position &pos) = 0;
   virtual ~Engine() = default;
   void seed(std::uint64_t s);
@@ -68,6 +69,8 @@ struct MinimaxOptions {
   int ms_per_move = 100;
   bool qscence = false;
   bool tt = false; // transposition table (best move first; reuse exact scores)
+  std::string
+      eval_weights_path; // weights file from tools/train.py; empty = material
 };
 
 class Minimax : public Engine {
@@ -82,6 +85,12 @@ public:
 
 private:
   MinimaxOptions opts_;
+  // The leaf evaluation, chosen once in the constructor: eval_material, or a
+  // Model loaded from opts_.eval_weights_path.
+  std::function<int(const Position &)> evaluate_pos_;
+  // Largest growth assumed from one search depth to the next when predicting
+  // whether the next depth fits in the time budget (see search()).
+  static constexpr double MAX_GROWTH = 10.0;
   static constexpr std::size_t TT_SIZE = std::size_t{1}
                                          << 20; // slots (power of 2)
   std::vector<TTentry> tt_; // TT_SIZE slots when opts_.tt, else empty

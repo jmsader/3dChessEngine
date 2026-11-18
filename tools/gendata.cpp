@@ -3,7 +3,8 @@
 // Usage:
 //   gendata [--engine NAME] [--time MS] [--games N] [--seed S] [--random-plies K] [--out FILE]
 //
-//   --engine        engine playing both sides, by its match name (default Alpha-Beta+Ord+Q)
+//   --engine        engine playing both sides, by its match name (default Alpha-Beta+Ord+Q);
+//                   it may use a learned evaluation, e.g. Alpha-Beta+Ord+Q+LIN_10
 //   --time          milliseconds per move (default 10)
 //   --games         number of games (default 100)
 //   --seed          seed for the random opening moves and the engines' tie-breaking (default 1);
@@ -90,7 +91,14 @@ int main(int argc, char** argv) {
     if (g_msPerMove <= 0) g_msPerMove = 10;
     if (games < 1 || randomPlies < 0) { std::cerr << "--games must be >= 1 and --random-plies >= 0\n"; return 2; }
 
-    auto white = makeEngine(engineName), black = makeEngine(engineName);
+    std::unique_ptr<rs::Engine> white, black;
+    try {
+        white = makeEngine(engineName);
+        black = makeEngine(engineName);
+    } catch (const std::exception& e) {  // e.g. a missing weights file
+        std::cerr << e.what() << "\n";
+        return 2;
+    }
     if (!white) { std::cerr << "unknown engine: " << engineName << " (choose from:" << availableEngines() << ")\n"; return 2; }
 
     if (outFile.empty()) {
