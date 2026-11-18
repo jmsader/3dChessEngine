@@ -8,8 +8,6 @@
 #   --engine NAME     engine playing the self-play games   (default Alpha-Beta+Ord+Q)
 #   --time MS         milliseconds per move                (default 10)
 #   --games N         games per process                    (default 1500)
-#   --newseed         add to this config's data: start after the highest seed already in data/
-#                     (without it, seeds start at 1 and replace those files)
 #   --model KIND      linear, mlp, or both                  (default both: linear, then mlp)
 #   --train           train only: no new games, use the existing data files for this config
 #   anything after -- is passed to tools/train.py, e.g.  -- --res_w 0.7
@@ -17,8 +15,10 @@
 # The number of parallel gendata processes is PROCS below (default: the CPU core count);
 # the learning rate and epochs are constants at the top of tools/train.py.
 #
-# Data goes to data/<engine>_<time>ms_seed<S>.csv (one file per process; logs alongside),
-# the trained weights to weights/<engine>_<time>ms_linear.txt and/or ..._mlp.txt.
+# Data goes to data/<engine>_<time>ms_seed<S>.csv (one file per process; logs alongside).
+# New runs add to the existing data: seeds continue after the highest one already there,
+# so nothing is overwritten, and training always uses every file for the config.
+# Trained weights go to weights/<engine>_<time>ms_linear.txt and/or ..._mlp.txt.
 #
 # Example: PROCS processes x 1500 games at 10 ms, then both models:
 #   tools/pipeline.sh --time 10 --games 1500
@@ -31,7 +31,6 @@ PROCS=$( (command -v nproc >/dev/null && nproc) || sysctl -n hw.ncpu 2>/dev/null
 engine="Alpha-Beta+Ord+Q"
 time_ms=10
 games=1500
-newseed=0
 model=both
 train_only=0
 train_args=()
@@ -44,7 +43,6 @@ while [[ $# -gt 0 ]]; do
     --engine) engine="$2"; shift 2 ;;
     --time) time_ms="$2"; shift 2 ;;
     --games) games="$2"; shift 2 ;;
-    --newseed) newseed=1; shift ;;
     --model) model="$2"; shift 2 ;;
     --train) train_only=1; shift ;;
     --) shift; train_args=("$@"); break ;;
@@ -61,15 +59,13 @@ keep_awake=()
 command -v caffeinate >/dev/null && keep_awake=(caffeinate -i)
 
 config="${engine}_${time_ms}ms"
+# Continue after the highest existing seed for this config, e.g. data/<config>_seed12.csv -> 13.
 seed_start=1
-if [[ $newseed -eq 1 ]]; then
-  # Highest existing seed for this config, e.g. data/<config>_seed12.csv -> next is 13.
-  for f in data/"${config}"_seed*.csv; do
-    [[ -e "$f" ]] || continue
-    n="${f##*_seed}"; n="${n%.csv}"
-    [[ "$n" =~ ^[0-9]+$ ]] && (( n >= seed_start )) && seed_start=$((n + 1))
-  done
-fi
+for f in data/"${config}"_seed*.csv; do
+  [[ -e "$f" ]] || continue
+  n="${f##*_seed}"; n="${n%.csv}"
+  [[ "$n" =~ ^[0-9]+$ ]] && (( n >= seed_start )) && seed_start=$((n + 1))
+done
 seed_end=$((seed_start + PROCS - 1))
 
 echo "== building"
