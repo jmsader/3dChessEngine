@@ -164,7 +164,11 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
   Position pos_root = pos; // one copy per search
   nodes = 1;               // the root; negamax counts the rest
   depth_reached = 0;
+  ms_used = 0.0;
+  // The moves (all equally good) and score of the last depth that finished
+  // within the time budget; a depth that finishes over it is thrown away.
   MoveList best_moves;
+  int best_cpawns = 0;
   int alpha =
       0; // read by the loop condition before the first depth (0 = not a mate)
   int iter_depth = 1;
@@ -201,7 +205,7 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
     // if (!best_moves.empty())
     //   moveToFront(moves, best_moves[0]);
 
-    // int best_cpawns = -INF_CPAWNS;
+    MoveList depth_best_moves;
     alpha = -INF_CPAWNS;
     int beta = INF_CPAWNS;
     for (Move move : moves) {
@@ -211,26 +215,32 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
       pos_root.unmakeMove();
       if (cand_cpawns > alpha) {
         alpha = cand_cpawns;
-        best_moves.clear();
-        best_moves.push(move);
+        depth_best_moves.clear();
+        depth_best_moves.push(move);
       } else if (cand_cpawns == alpha) {
-        best_moves.push(move);
+        depth_best_moves.push(move);
       }
     }
+    const double finished_ms = elapsed_ms();
     prev_depth_ms = last_depth_ms;
-    last_depth_ms = elapsed_ms() - depth_start_ms;
-    depth_reached = iter_depth; // this depth finished
+    last_depth_ms = finished_ms - depth_start_ms;
+    if (finished_ms > opts_.ms_per_move)
+      break; // finished over the budget: thrown away
+    best_moves = depth_best_moves;
+    best_cpawns = alpha;
+    ms_used = finished_ms;
+    depth_reached = iter_depth; // this depth finished in time
     ++iter_depth;
   }
 
-  if (best_moves.empty()) {
+  if (best_moves.empty()) { // no depth finished in time (ms_used stays 0)
     Random rand_eng;
     return rand_eng.search(pos);
   }
 
   Move best_move = best_moves[rng.below(best_moves.size())];
 
-  return {best_move, alpha};
+  return {best_move, best_cpawns};
 }
 
 int Minimax::quiescence(Position &pos, int alpha, int beta) {

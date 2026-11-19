@@ -1,0 +1,17 @@
+rank,engine,elo,avg_depth,avg_ms
+1,Alpha-Beta+Ord+Q+TT+NN_10,799,1.00,0.32
+2,Alpha-Beta+Ord+Q,799,1.00,0.24
+3,Alpha-Beta+Ord+Q+NN_10,795,0.99,0.32
+4,Alpha-Beta+Ord+Q+TT,776,1.03,0.26
+5,Alpha-Beta+Ord+Q+LIN_10,758,1.08,0.29
+6,Alpha-Beta+Ord+Q+TT+LIN_10,752,1.09,0.31
+7,Alpha-Beta+Ord+NN_10,533,1.40,0.29
+8,Alpha-Beta+Ord+LIN_10,473,1.44,0.29
+9,Alpha-Beta+LIN_10,463,1.47,0.29
+10,Alpha-Beta+NN_10,455,1.40,0.30
+11,Minimax+NN_10,444,1.20,0.23
+12,Minimax+LIN_10,441,1.23,0.23
+13,Alpha-Beta+Ord,420,1.42,0.30
+14,Minimax,395,1.32,0.27
+15,Alpha-Beta,380,1.38,0.30
+16,Random,0,0.00,0.00

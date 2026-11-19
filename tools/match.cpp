@@ -51,7 +51,6 @@
 // position loses that game.
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -123,12 +122,9 @@ GameRecord playGame(rs::Engine &white, rs::Engine &black, Usage &whiteUse,
     }
 
     rs::Engine &toMove = pos.sideToMove() == rs::White ? white : black;
-    const auto start = std::chrono::steady_clock::now();
     const auto [move, score] = toMove.search(pos);
     Usage &use = pos.sideToMove() == rs::White ? whiteUse : blackUse;
-    use.seconds +=
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count();
+    use.seconds += toMove.ms_used / 1000.0; // time to the move played
     use.nodes += toMove.nodes;
     use.depthSum += toMove.depth_reached;
     ++use.moves;

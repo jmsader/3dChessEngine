@@ -30,6 +30,10 @@ public:
   // Deepest search depth the last search() completed; 0 for engines that don't
   // search. Tools read it to report average depth per move.
   int depth_reached = 0;
+  // CPU milliseconds the last search() took to finish the depth whose move it
+  // played; 0 for engines that don't search and for a random fallback. Tools
+  // read it to report average ms per move.
+  double ms_used = 0.0;
   // may not need
 
   Engine(std::string engine_name);
