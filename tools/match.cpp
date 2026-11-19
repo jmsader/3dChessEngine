@@ -4,6 +4,7 @@
 // Usage:
 //   match <engine> <engine> [<engine> ...] [--games N] [--seed S] [--time MS]
 //         [--csv FILE] [--anchor NAME] [--verbose]
+//   match --all [options]
 //
 //   engines   Random, Minimax, Alpha-Beta, Alpha-Beta+Ord, Alpha-Beta+Ord+Q,
 //             Alpha-Beta+Ord+Q+TT: the engines' own names, in any
@@ -28,12 +29,15 @@
 //             MinimaxOptions::ms_per_move; without it, the engines' default is
 //             used)
 //   --csv     write the final table to FILE (rank, engine, elo, avg_depth,
-//             avg_ms) and each pair's result to FILE with "_pairs" before the
-//             extension (engine_a, engine_b, wins, draws, losses, counted for
-//             engine_a; e.g. results.csv and results_pairs.csv)
+//             avg_ms) and each pair's result to a file of the same name in a
+//             pairs/ folder next to it (engine_a, engine_b, wins, draws,
+//             losses, counted for engine_a; e.g. results/10ms.csv and
+//             results/pairs/10ms.csv). Missing folders are created.
 //   --anchor  engine whose Elo is fixed at 0 (default: random if it plays, else
 //   the first engine listed)
 //   --verbose print every move and the final board of each game
+//   --all     ignore any engines named and play every engine: each engine in
+//             the table, and each search engine also with +LIN_10 and +NN_10
 //
 // Output: each pair's result with its Elo difference and 95% range, then the
 // final Elo table, fitted to all games at once (Elo/Bradley-Terry model, draws
@@ -51,6 +55,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -68,6 +73,21 @@
 #include "raumschach/rules.h"
 
 namespace {
+
+// --all: every engine in the table, and every search engine also with the 10 ms
+// linear and MLP models.
+std::vector<std::string> allEngineNames() {
+  std::vector<std::string> names;
+  for (const EngineFactory &make : engineTable()) {
+    const auto engine = make();
+    names.push_back(engine->name);
+    if (dynamic_cast<const rs::Minimax *>(engine.get())) {
+      names.push_back(engine->name + "+LIN_10");
+      names.push_back(engine->name + "+NN_10");
+    }
+  }
+  return names;
+}
 
 enum class Outcome { WhiteWins, BlackWins, Draw };
 
@@ -295,13 +315,10 @@ std::uint64_t engineSeed(unsigned master, int pair, int side) {
   return z ^ (z >> 31);
 }
 
-// "results.csv" -> "results_pairs.csv"; "out" -> "out_pairs.csv"
+// "results/10ms.csv" -> "results/pairs/10ms.csv"
 std::string pairsFileName(const std::string &csvFile) {
-  const auto dot = csvFile.find_last_of('.');
-  const auto slash = csvFile.find_last_of("/\\");
-  if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
-    return csvFile + "_pairs.csv";
-  return csvFile.substr(0, dot) + "_pairs" + csvFile.substr(dot);
+  const std::filesystem::path path(csvFile);
+  return (path.parent_path() / "pairs" / path.filename()).string();
 }
 
 } // namespace
@@ -311,7 +328,7 @@ int main(int argc, char **argv) {
   int games = 10;
   unsigned seed = 1;
   std::string csvFile, anchorName;
-  bool verbose = false;
+  bool verbose = false, all = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--games" && i + 1 < argc)
@@ -330,6 +347,8 @@ int main(int argc, char **argv) {
       anchorName = argv[++i];
     else if (arg == "--verbose")
       verbose = true;
+    else if (arg == "--all")
+      all = true;
     else if (!arg.empty() && arg[0] == '-') {
       std::cerr << "unknown option: " << arg << "\n";
       return 2;
@@ -337,11 +356,14 @@ int main(int argc, char **argv) {
       names.push_back(arg);
   }
 
+  if (all)
+    names = allEngineNames();
   const std::string available = availableEngines();
   if (names.size() < 2 || games < 1) {
     std::cerr << "usage: match <engine> <engine> [<engine> ...] [--games N] "
                  "[--seed S] [--time MS] [--csv FILE] "
                  "[--anchor NAME] [--verbose]\n"
+              << "       match --all [options]\n"
               << "engines:" << available << "\n";
     return 2;
   }
@@ -403,6 +425,9 @@ int main(int argc, char **argv) {
   std::ofstream csv, pairsCsv;
   const std::string pairsFile = csvFile.empty() ? "" : pairsFileName(csvFile);
   if (!csvFile.empty()) {
+    std::error_code ignored; // a failure shows up as "cannot write" below
+    std::filesystem::create_directories(
+        std::filesystem::path(pairsFile).parent_path(), ignored);
     csv.open(csvFile);
     pairsCsv.open(pairsFile);
     if (!csv || !pairsCsv) {
