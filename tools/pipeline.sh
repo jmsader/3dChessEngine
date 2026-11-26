@@ -6,7 +6,7 @@
 #   tools/pipeline.sh --help       (prints this)
 #
 #   --engine NAME     engine playing the self-play games   (default Alpha-Beta+Ord+Q)
-#   --time MS         milliseconds per move                (default 10)
+#   --depth N         search depth for every move          (default 2; fixed depth, no time limit)
 #   --games N         games per process                    (default 1500)
 #   --model KIND      linear, mlp, or both                  (default both: linear, then mlp)
 #   --train           train only: no new games, use the existing data files for this config
@@ -15,13 +15,14 @@
 # The number of parallel gendata processes is PROCS below (default: the CPU core count);
 # the learning rate and epochs are constants at the top of tools/train.py.
 #
-# Data goes to data/<engine>_<time>ms_seed<S>.csv (one file per process; logs alongside).
+# Data goes to data/<engine>_d<depth>_seed<S>.csv (one file per process; logs alongside).
 # New runs add to the existing data: seeds continue after the highest one already there,
 # so nothing is overwritten, and training always uses every file for the config.
-# Trained weights go to weights/<engine>_<time>ms_linear.txt and/or ..._mlp.txt.
+# Trained weights go to weights/<engine>_d<depth>_linear.txt and/or ..._mlp.txt, used by engines
+# named ...+LIN_d<depth> / ...+NN_d<depth>.
 #
-# Example: PROCS processes x 1500 games at 10 ms, then both models:
-#   tools/pipeline.sh --time 10 --games 1500
+# Example: PROCS processes x 1500 games at depth 2, then both models:
+#   tools/pipeline.sh --depth 2 --games 1500
 set -euo pipefail
 
 # Parallel gendata processes: one per CPU core by default. Edit to use fewer
@@ -29,7 +30,7 @@ set -euo pipefail
 PROCS=$( (command -v nproc >/dev/null && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 engine="Alpha-Beta+Ord+Q"
-time_ms=10
+depth=2
 games=1500
 model=both
 train_only=0
@@ -41,7 +42,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --engine) engine="$2"; shift 2 ;;
-    --time) time_ms="$2"; shift 2 ;;
+    --depth) depth="$2"; shift 2 ;;
     --games) games="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
     --train) train_only=1; shift ;;
@@ -58,7 +59,7 @@ python=${PYTHON:-python3}
 keep_awake=()
 command -v caffeinate >/dev/null && keep_awake=(caffeinate -i)
 
-config="${engine}_${time_ms}ms"
+config="${engine}_d${depth}"
 # Continue after the highest existing seed for this config, e.g. data/<config>_seed12.csv -> 13.
 seed_start=1
 for f in data/"${config}"_seed*.csv; do
@@ -73,11 +74,11 @@ make -s
 
 if [[ $train_only -eq 0 ]]; then
   mkdir -p data
-  echo "== generating data: $PROCS processes x $games games, $engine at $time_ms ms (seeds $seed_start-$seed_end)"
+  echo "== generating data: $PROCS processes x $games games, $engine at depth $depth (seeds $seed_start-$seed_end)"
   echo "   progress: tail -f data/${config}_seed${seed_start}.log"
   pids=()
   for ((s = seed_start; s <= seed_end; s++)); do
-    "${keep_awake[@]}" ./build-make/gendata --engine "$engine" --time "$time_ms" --games "$games" \
+    "${keep_awake[@]}" ./build-make/gendata --engine "$engine" --depth "$depth" --games "$games" \
       --seed "$s" --out "data/${config}_seed${s}.csv" > "data/${config}_seed${s}.log" 2>&1 &
     pids+=($!)
   done

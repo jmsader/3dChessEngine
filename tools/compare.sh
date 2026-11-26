@@ -9,30 +9,31 @@
 #
 #   ENGINE        engine names as in the match tool: Random, Minimax, Alpha-Beta, Alpha-Beta+Ord,
 #                 Alpha-Beta+Ord+Q, Alpha-Beta+Ord+Q+TT, and any search engine with
-#                 +LIN_<ms> / +NN_<ms> for a learned evaluation: the linear / MLP model trained
-#                 on <ms>-ms data, read from weights/Alpha-Beta+Ord+Q_<ms>ms_linear.txt / _mlp.txt
-#                 (e.g. Alpha-Beta+LIN_10, Alpha-Beta+Ord+Q+NN_1)
-#   --time MS     milliseconds per move   (default 100)
-#   --games N     games per pair          (default 20)
+#                 +LIN_d<depth> / +NN_d<depth> for a learned evaluation: the linear / MLP model
+#                 trained on data searched to <depth>, read from
+#                 weights/Alpha-Beta+Ord+Q_d<depth>_linear.txt / _mlp.txt
+#                 (e.g. Alpha-Beta+LIN_d2, Alpha-Beta+Ord+Q+NN_d2)
+#   --time MS     milliseconds per move   (default 10)
+#   --games N     games per pair          (default 16)
 #   --all         ignore any engines named and play every engine: each search engine with
-#                 material, +LIN_10 and +NN_10, plus Random (16 engines, 120 pairs)
+#                 material, +LIN_d2 and +NN_d2, plus Random (16 engines, 120 pairs)
 #
 # Results, in the results/ folder (created if missing):
-#   results/<ms>ms.csv        rank, engine, elo, avg_depth, avg_ms
+#   results/<ms>ms.csv        rank, engine, elo, avg_depth
 #   results/pairs/<ms>ms.csv  engine_a, engine_b, wins, draws, losses (counted for engine_a)
 # e.g. results/10ms.csv. A run replaces the files for its time control only, so runs at
 # different time controls can run at the same time.
 #
 # Examples:
-#   tools/compare.sh Random Alpha-Beta+Ord+Q Alpha-Beta+Ord+Q+LIN_10 Alpha-Beta+Ord+Q+NN_10
-#   tools/compare.sh Random Alpha-Beta+Ord+Q+NN_1 Alpha-Beta+Ord+Q+NN_10
+#   tools/compare.sh Random Alpha-Beta+Ord+Q Alpha-Beta+Ord+Q+LIN_d2 Alpha-Beta+Ord+Q+NN_d2
+#   tools/compare.sh Random Alpha-Beta+Ord+Q+NN_d1 Alpha-Beta+Ord+Q+NN_d2
 #   tools/compare.sh --time 50 --games 10 Random Alpha-Beta Alpha-Beta+Ord Alpha-Beta+Ord+Q
 set -euo pipefail
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
-time_ms=5
-games=4
+time_ms=10
+games=16
 engines=()
 all=0
 

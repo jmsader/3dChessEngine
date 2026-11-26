@@ -8,10 +8,10 @@
 //
 //   engines   Random, Minimax, Alpha-Beta, Alpha-Beta+Ord, Alpha-Beta+Ord+Q,
 //             Alpha-Beta+Ord+Q+TT: the engines' own names, in any
-//             capitalization. Any search engine + LIN_<ms> / +NN_<ms> uses a
-//             learned evaluation: the linear / MLP model trained on <ms>-ms
-//             data, e.g. Alpha-Beta+Ord+Q+NN_10 reads
-//             weights/Alpha-Beta+Ord+Q_10ms_mlp.txt (run from the project
+//             capitalization. Any search engine + LIN_d<depth> / +NN_d<depth>
+//             uses a learned evaluation: the linear / MLP model trained on
+//             data searched to <depth>, e.g. Alpha-Beta+Ord+Q+NN_d2 reads
+//             weights/Alpha-Beta+Ord+Q_d2_mlp.txt (run from the project
 //             folder). All output uses the engine's name; the same
 //             engine may appear twice ("Minimax Minimax" -> Minimax#1,
 //             Minimax#2).
@@ -28,8 +28,8 @@
 //   engine (sets
 //             MinimaxOptions::ms_per_move; without it, the engines' default is
 //             used)
-//   --csv     write the final table to FILE (rank, engine, elo, avg_depth,
-//             avg_ms) and each pair's result to a file of the same name in a
+//   --csv     write the final table to FILE (rank, engine, elo, avg_depth)
+//             and each pair's result to a file of the same name in a
 //             pairs/ folder next to it (engine_a, engine_b, wins, draws,
 //             losses, counted for engine_a; e.g. results/10ms.csv and
 //             results/pairs/10ms.csv). Missing folders are created.
@@ -37,7 +37,7 @@
 //   the first engine listed)
 //   --verbose print every move and the final board of each game
 //   --all     ignore any engines named and play every engine: each engine in
-//             the table, and each search engine also with +LIN_10 and +NN_10
+//             the table, and each search engine also with +LIN_d2 and +NN_d2
 //
 // Output: each pair's result with its Elo difference and 95% range, then the
 // final Elo table, fitted to all games at once (Elo/Bradley-Terry model, draws
@@ -73,16 +73,16 @@
 
 namespace {
 
-// --all: every engine in the table, and every search engine also with the 10 ms
-// linear and MLP models.
+// --all: every engine in the table, and every search engine also with the
+// linear and MLP models trained on depth-kAllDepth data.
 std::vector<std::string> allEngineNames() {
   std::vector<std::string> names;
   for (const EngineFactory &make : engineTable()) {
     const auto engine = make();
     names.push_back(engine->name);
     if (dynamic_cast<const rs::Minimax *>(engine.get())) {
-      names.push_back(engine->name + "+LIN_10");
-      names.push_back(engine->name + "+NN_10");
+      names.push_back(engine->name + "+LIN_d" + std::to_string(kAllDepth));
+      names.push_back(engine->name + "+NN_d" + std::to_string(kAllDepth));
     }
   }
   return names;
@@ -100,7 +100,6 @@ struct GameRecord {
 struct Usage {
   std::uint64_t nodes = 0;
   long moves = 0;
-  double seconds = 0.0;
   long depthSum = 0; // sum of depth_reached over all moves
 };
 
@@ -124,7 +123,6 @@ GameRecord playGame(rs::Engine &white, rs::Engine &black, Usage &whiteUse,
     rs::Engine &toMove = pos.sideToMove() == rs::White ? white : black;
     const auto [move, score] = toMove.search(pos);
     Usage &use = pos.sideToMove() == rs::White ? whiteUse : blackUse;
-    use.seconds += toMove.ms_used / 1000.0; // time to the move played
     use.nodes += toMove.nodes;
     use.depthSum += toMove.depth_reached;
     ++use.moves;
@@ -514,10 +512,6 @@ int main(int argc, char **argv) {
     return usage[i].moves ? double(usage[i].nodes) / double(usage[i].moves)
                           : 0.0;
   };
-  auto msPerMove = [&](std::size_t i) {
-    return usage[i].moves ? 1000.0 * usage[i].seconds / double(usage[i].moves)
-                          : 0.0;
-  };
   auto depthPerMove = [&](std::size_t i) {
     return usage[i].moves ? double(usage[i].depthSum) / double(usage[i].moves)
                           : 0.0;
@@ -538,7 +532,7 @@ int main(int argc, char **argv) {
             << "+-95%)\n"
             << "   #  " << std::left << std::setw(nameWidth) << "engine"
             << "    Elo     +-95%   games  points   score      W     D     L   "
-               "nodes/move  ms/move  depth/move\n";
+               "nodes/move  depth/move\n";
   for (std::size_t r = 0; r < n; ++r) {
     const std::size_t i = order[r];
     const int played = wins[i] + draws[i] + losses[i];
@@ -550,30 +544,28 @@ int main(int argc, char **argv) {
               << pts << std::setw(7) << 100.0 * pts / played << "%"
               << std::setw(7) << wins[i] << std::setw(6) << draws[i]
               << std::setw(6) << losses[i] << std::setw(13)
-              << std::setprecision(0) << nodesPerMove(i) << std::setw(9)
-              << std::setprecision(2) << msPerMove(i) << std::setw(12)
+              << std::setprecision(0) << nodesPerMove(i) << std::setw(12)
               << std::setprecision(1) << depthPerMove(i) << "\n";
   }
   std::cout << "(fitted to all games at once; draws count 1/2; 1 virtual draw "
                "per pair keeps perfect scores finite;\n"
-            << " nodes/move, ms/move and depth/move are averages over all of "
+            << " nodes/move and depth/move are averages over all of "
                "an engine's moves in this match)\n";
 
   if (csv.is_open()) {
-    // Final table: rank, engine, Elo, average depth and ms per move.
-    csv << std::fixed << "rank,engine,elo,avg_depth,avg_ms\n";
+    // Final table: rank, engine, Elo, average depth per move.
+    csv << std::fixed << "rank,engine,elo,avg_depth\n";
     for (std::size_t r = 0; r < n; ++r) {
       const std::size_t i = order[r];
       csv << r + 1 << "," << labels[i] << "," << std::lround(ratings.elo[i])
-          << "," << std::setprecision(2) << depthPerMove(i) << ","
-          << std::setprecision(2) << msPerMove(i) << "\n";
+          << "," << std::setprecision(2) << depthPerMove(i) << "\n";
     }
     // Each pair's result, counted for engine_a.
     pairsCsv << "engine_a,engine_b,wins,draws,losses\n";
     for (const PairResult &p : pairs)
       pairsCsv << labels[p.a] << "," << labels[p.b] << "," << p.winsA << ","
                << p.draws << "," << p.winsB << "\n";
-    std::cout << "\nwrote " << csvFile << " (Elo, depth, ms per engine) and "
+    std::cout << "\nwrote " << csvFile << " (Elo, depth per engine) and "
               << pairsFile << " (wins, draws, losses per pair)\n";
   }
   return 0;

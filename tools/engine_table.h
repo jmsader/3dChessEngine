@@ -25,12 +25,15 @@ std::string lower(std::string s) {
 using EngineFactory = std::function<std::unique_ptr<rs::Engine>()>;
 
 int g_msPerMove = 0;  // from --time, in milliseconds; 0 = keep MinimaxOptions' default
+int g_maxDepth = 0;   // from gendata's --depth: fixed search depth, no time limit; 0 = timed
 
-// Learned evaluations: an engine name ending in "+LIN_<ms>" or "+NN_<ms>" is that search engine
-// with the linear / MLP model trained on <ms>-millisecond data, e.g. "Alpha-Beta+Ord+Q+NN_10"
-// uses weights/Alpha-Beta+Ord+Q_10ms_mlp.txt. All training data comes from kDataEngine.
+// Learned evaluations: an engine name ending in "+LIN_d<depth>" or "+NN_d<depth>" is that search
+// engine with the linear / MLP model trained on data searched to <depth>, e.g.
+// "Alpha-Beta+Ord+Q+NN_d2" uses weights/Alpha-Beta+Ord+Q_d2_mlp.txt. All training data comes from
+// kDataEngine.
 const std::string kWeightsDir = "weights/";
 const std::string kDataEngine = "Alpha-Beta+Ord+Q";
+const int kAllDepth = 2;  // match --all uses the models trained on depth-kAllDepth data
 std::string g_evalWeights;  // set by makeEngine only while it creates a +LIN_/+NN_ engine
 
 // Options with the given switches and the match's time control.
@@ -41,6 +44,7 @@ rs::MinimaxOptions minimaxOptions(bool pruning, bool ordering, bool qscence = fa
     o.qscence = qscence;
     o.tt = tt;
     if (g_msPerMove > 0) o.ms_per_move = g_msPerMove;
+    o.max_depth = g_maxDepth;
     o.eval_weights_path = g_evalWeights;
     return o;
 }
@@ -57,25 +61,26 @@ const std::vector<EngineFactory>& engineTable() {
     return table;
 }
 
-// The weights file for a "+LIN_<ms>" / "+NN_<ms>" suffix, or "" if `name` has no such suffix.
+// The weights file for a "+LIN_d<depth>" / "+NN_d<depth>" suffix, or "" if `name` has no such
+// suffix.
 // Sets `base` to the name without the suffix (lowercase).
 std::string weightsFileFor(const std::string& name, std::string& base) {
     base = lower(name);
     const std::size_t plus = base.rfind('+');
     if (plus == std::string::npos) return "";
-    const std::string suffix = base.substr(plus + 1);  // e.g. "lin_10"
+    const std::string suffix = base.substr(plus + 1);  // e.g. "lin_d2"
     const std::size_t underscore = suffix.find('_');
     if (underscore == std::string::npos) return "";
-    const std::string kind = suffix.substr(0, underscore), ms = suffix.substr(underscore + 1);
-    if ((kind != "lin" && kind != "nn") || ms.empty() ||
-        !std::all_of(ms.begin(), ms.end(), [](char c) { return c >= '0' && c <= '9'; }))
+    const std::string kind = suffix.substr(0, underscore), depth = suffix.substr(underscore + 1);  // "d2"
+    if ((kind != "lin" && kind != "nn") || depth.size() < 2 || depth[0] != 'd' ||
+        !std::all_of(depth.begin() + 1, depth.end(), [](char c) { return c >= '0' && c <= '9'; }))
         return "";
     base.resize(plus);
-    return kWeightsDir + kDataEngine + "_" + ms + "ms_" + (kind == "lin" ? "linear" : "mlp") + ".txt";
+    return kWeightsDir + kDataEngine + "_" + depth + "_" + (kind == "lin" ? "linear" : "mlp") + ".txt";
 }
 
 // Creates an engine from its name (case-insensitive), e.g. "Random", "alpha-beta+ord",
-// "Alpha-Beta+Ord+Q+NN_10". Returns nullptr for an unknown name; throws std::runtime_error if a
+// "Alpha-Beta+Ord+Q+NN_d2". Returns nullptr for an unknown name; throws std::runtime_error if a
 // +LIN_ / +NN_ engine's weights file is missing or can't be used.
 std::unique_ptr<rs::Engine> makeEngine(const std::string& name) {
     std::string base;
@@ -87,7 +92,7 @@ std::unique_ptr<rs::Engine> makeEngine(const std::string& name) {
         std::unique_ptr<rs::Engine> engine;
         try { engine = make(); } catch (...) { g_evalWeights.clear(); throw; }
         g_evalWeights.clear();
-        if (lower(engine->name) != lower(name))  // e.g. "Random+LIN_10"
+        if (lower(engine->name) != lower(name))  // e.g. "Random+LIN_d2"
             throw std::runtime_error(name + ": " + make()->name + " has no evaluation to replace");
         return engine;
     }
@@ -98,8 +103,8 @@ std::unique_ptr<rs::Engine> makeEngine(const std::string& name) {
 std::string availableEngines() {
     std::string out;
     for (const EngineFactory& make : engineTable()) out += " " + make()->name;
-    return out + " (add +LIN_<ms> / +NN_<ms> to a search engine for a learned evaluation, e.g. "
-                 "Alpha-Beta+Ord+Q+NN_10 uses " + kWeightsDir + kDataEngine + "_10ms_mlp.txt)";
+    return out + " (add +LIN_d<depth> / +NN_d<depth> to a search engine for a learned evaluation, e.g. "
+                 "Alpha-Beta+Ord+Q+NN_d2 uses " + kWeightsDir + kDataEngine + "_d2_mlp.txt)";
 }
 
 }  // namespace

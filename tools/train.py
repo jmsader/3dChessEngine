@@ -3,7 +3,7 @@
 Skeleton to fill in: every TODO is yours. The steps are in the order a typical PyTorch
 project runs them; read top to bottom.
 
-    python tools/train.py data/Alpha-Beta+Ord+Q_1ms_seed*.csv --model-kind linear
+    python tools/train.py data/Alpha-Beta+Ord+Q_d2_seed*.csv --model-kind linear
 
 Input files: CSVs from tools/gendata (one row per position):
     board,stm,score,result,ply,game
@@ -292,9 +292,9 @@ def export_weights(model, k, path):
 
 
 def output_name(files, kind):
-    """weights/<data config>_<model>.txt, e.g. weights/Alpha-Beta+Ord+Q_1ms_linear.txt,
+    """weights/<data config>_<model>.txt, e.g. weights/Alpha-Beta+Ord+Q_d2_linear.txt,
     so every engine x time control (and model) gets its own weights file."""
-    stem = Path(files[0]).stem  # e.g. Alpha-Beta+Ord+Q_1ms_seed1
+    stem = Path(files[0]).stem  # e.g. Alpha-Beta+Ord+Q_d2_seed1
     config = stem.rsplit("_seed", 1)[0]  # drop the seed: all seeds go into one model
     return Path(f"{config}_{kind}.txt")
 

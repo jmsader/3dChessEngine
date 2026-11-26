@@ -1,17 +1,20 @@
 // gendata: self-play games that save training positions for a learned evaluation.
 //
 // Usage:
-//   gendata [--engine NAME] [--time MS] [--games N] [--seed S] [--random-plies K] [--out FILE]
+//   gendata [--engine NAME] [--depth N] [--games N] [--seed S] [--random-plies K] [--out FILE]
 //
 //   --engine        engine playing both sides, by its match name (default Alpha-Beta+Ord+Q);
-//                   it may use a learned evaluation, e.g. Alpha-Beta+Ord+Q+LIN_10
-//   --time          milliseconds per move (default 10)
+//                   it may use a learned evaluation, e.g. Alpha-Beta+Ord+Q+LIN_d2
+//   --depth         search depth for every move (default 2): a fixed depth with no time limit,
+//                   so every search finishes and every position gets the same search effort
 //   --games         number of games (default 100)
 //   --seed          seed for the random opening moves and the engines' tie-breaking (default 1);
 //                   run several processes with different seeds (and files) to use more cores
-//   --random-plies  plies played at random at the start of every game, for variety (default 6)
-//   --out           output file (default data/<engine>_<time>ms_seed<S>.csv, e.g.
-//                   data/Alpha-Beta+Ord+Q_10ms_seed1.csv), so every engine x time control
+//   --random-plies  plies played at random at the start of every game, for variety (default 4):
+//                   each is a random move among those that don't lose material (see
+//                   soundRandomMove)
+//   --out           output file (default data/<engine>_d<depth>_seed<S>.csv, e.g.
+//                   data/Alpha-Beta+Ord+Q_d2_seed1.csv), so every engine x depth
 //                   configuration gets its own file
 //
 // One CSV row per kept position:
@@ -24,10 +27,12 @@
 //   ply     ply number in the game (0 = start position)
 //   game    game number in this file
 //
-// Kept positions are those that are quiet enough to label: after the random opening plus two
-// more plies, side to move not in check, the engine's chosen move not a capture or promotion,
-// and the score not a mate score. Rows are written at the end of each game (the result is
-// known only then), so a stopped run keeps every finished game.
+// Every position the engine searches is kept, from the end of the random opening on. (The
+// search is never cut off at a fixed depth; a position whose search somehow finished no depth,
+// a random fallback with no real score, would still be skipped.) Rows are
+// written at the end of each game (the result is known only then), so a stopped run keeps every
+// finished game.
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -61,6 +66,25 @@ std::string boardString(const rs::Position& pos) {
     return s;
 }
 
+// A random opening move among those within 1 cp of the best, scored by the engine's own
+// quiescence search with material values (`scorer`), i.e. any move that doesn't lose material,
+// so the random opening varies games without deciding them.
+rs::Move soundRandomMove(rs::Position& pos, rs::Rng& rng, rs::Minimax& scorer) {
+    rs::MoveList moves;
+    rs::generateLegalMoves(pos, moves);
+    std::vector<int> scores;
+    for (rs::Move m : moves) {
+        pos.makeMove(m);
+        scores.push_back(-scorer.quiescenceScore(pos));
+        pos.unmakeMove();
+    }
+    const int best = *std::max_element(scores.begin(), scores.end());
+    rs::MoveList sound;
+    for (std::size_t i = 0; i < moves.size(); ++i)
+        if (scores[i] >= best - 1) sound.push(moves[i]);
+    return sound[static_cast<std::size_t>(rng.below(sound.size()))];
+}
+
 struct Row {
     std::string board;
     rs::Color stm;
@@ -72,24 +96,32 @@ struct Row {
 
 int main(int argc, char** argv) {
     std::string engineName = "Alpha-Beta+Ord+Q", outFile;
-    int games = 100, randomPlies = 6;
+    int games = 100, randomPlies = 4, depth = 2;
     std::uint64_t seed = 1;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--engine" && i + 1 < argc) engineName = argv[++i];
-        else if (arg == "--time" && i + 1 < argc) g_msPerMove = std::atoi(argv[++i]);
+        else if (arg == "--depth" && i + 1 < argc) depth = std::atoi(argv[++i]);
         else if (arg == "--games" && i + 1 < argc) games = std::atoi(argv[++i]);
         else if (arg == "--seed" && i + 1 < argc) seed = std::strtoull(argv[++i], nullptr, 10);
         else if (arg == "--random-plies" && i + 1 < argc) randomPlies = std::atoi(argv[++i]);
         else if (arg == "--out" && i + 1 < argc) outFile = argv[++i];
         else {
-            std::cerr << "usage: gendata [--engine NAME] [--time MS] [--games N] [--seed S] [--random-plies K] [--out FILE]\n"
+            std::cerr << "usage: gendata [--engine NAME] [--depth N] [--games N] [--seed S] [--random-plies K] [--out FILE]\n"
                       << "engines:" << availableEngines() << "\n";
             return 2;
         }
     }
-    if (g_msPerMove <= 0) g_msPerMove = 10;
-    if (games < 1 || randomPlies < 0) { std::cerr << "--games must be >= 1 and --random-plies >= 0\n"; return 2; }
+    if (games < 1 || randomPlies < 0 || depth < 1) {
+        std::cerr << "--games and --depth must be >= 1 and --random-plies >= 0\n";
+        return 2;
+    }
+    g_maxDepth = depth;  // every engine made below searches exactly this deep
+
+    // Scores the random opening moves: material evaluation, quiescence with MVV-LVA ordering.
+    rs::MinimaxOptions scorerOptions;
+    scorerOptions.pruning = scorerOptions.ordering = scorerOptions.qscence = true;
+    rs::Minimax scorer(scorerOptions);
 
     std::unique_ptr<rs::Engine> white, black;
     try {
@@ -103,7 +135,7 @@ int main(int argc, char** argv) {
 
     if (outFile.empty()) {
         std::filesystem::create_directories("data");
-        outFile = "data/" + white->name + "_" + std::to_string(g_msPerMove) + "ms_seed" + std::to_string(seed) + ".csv";
+        outFile = "data/" + white->name + "_d" + std::to_string(depth) + "_seed" + std::to_string(seed) + ".csv";
     }
     std::ofstream out(outFile);
     if (!out) { std::cerr << "cannot write " << outFile << "\n"; return 2; }
@@ -126,16 +158,12 @@ int main(int argc, char** argv) {
             if (status.isOver()) break;
             rs::Move move;
             if (ply < randomPlies) {
-                rs::MoveList moves;
-                rs::generateLegalMoves(pos, moves);
-                move = moves[static_cast<std::size_t>(openingRng.below(moves.size()))];
+                move = soundRandomMove(pos, openingRng, scorer);
             } else {
                 rs::Engine& toMove = pos.sideToMove() == rs::White ? *white : *black;
                 const auto [m, score] = toMove.search(pos);
                 move = m;
-                const bool noisy = rs::typeOf(pos.pieceAt(move.to())) != rs::NoPieceType ||
-                                   move.promotion() != rs::NoPieceType;
-                if (ply >= randomPlies + 2 && !pos.inCheck() && !noisy && !rs::Engine::is_mate_cpawns(score))
+                if (toMove.depth_reached > 0)  // not a random fallback
                     rows.push_back({boardString(pos), pos.sideToMove(), score, ply});
             }
             pos.makeMove(move);

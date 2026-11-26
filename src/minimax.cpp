@@ -4,6 +4,7 @@
 #include "raumschach/rng.h"
 #include "raumschach/types.h"
 #include <algorithm>
+#include <limits>
 #include <ctime>
 #include <stdexcept>
 #include <tuple>
@@ -13,23 +14,24 @@ namespace rs {
 
 namespace {
 // Name suffix for the evaluation, from the weights file's name. tools/train.py
-// writes <engine>_<ms>ms_linear.txt or <engine>_<ms>ms_mlp.txt, so e.g.
-// weights/Alpha-Beta+Ord+Q_10ms_mlp.txt gives "+NN_10": the model kind and the
-// time control of its training data. The constructor checks that the loaded
+// writes <engine>_d<depth>_linear.txt or <engine>_d<depth>_mlp.txt, so e.g.
+// weights/Alpha-Beta+Ord+Q_d2_mlp.txt gives "+NN_d2": the model kind and the
+// search depth of its training data. The constructor checks that the loaded
 // file really is that kind of model.
 std::string evalSuffix(const std::string &weights_path) {
   if (weights_path.empty())
     return ""; // material
-  std::string suffix =
-      weights_path.find("_mlp") != std::string::npos ? "+NN" : "+LIN";
-  const std::size_t ms = weights_path.rfind("ms_");
-  std::size_t digits = ms;
-  while (ms != std::string::npos && digits > 0 &&
-         weights_path[digits - 1] >= '0' && weights_path[digits - 1] <= '9')
-    --digits;
-  if (ms != std::string::npos && digits < ms && digits > 0 &&
-      weights_path[digits - 1] == '_')
-    suffix += "_" + weights_path.substr(digits, ms - digits);
+  const bool mlp = weights_path.find("_mlp") != std::string::npos;
+  std::string suffix = mlp ? "+NN" : "+LIN";
+  const std::size_t kind = weights_path.rfind(mlp ? "_mlp" : "_linear");
+  const std::size_t d = kind == std::string::npos
+                            ? std::string::npos
+                            : weights_path.rfind("_d", kind);
+  if (d != std::string::npos && d + 2 < kind &&
+      std::all_of(weights_path.begin() + static_cast<long>(d) + 2,
+                  weights_path.begin() + static_cast<long>(kind),
+                  [](char c) { return c >= '0' && c <= '9'; }))
+    suffix += weights_path.substr(d, kind - d); // "_d2"
   return suffix;
 }
 } // namespace
@@ -88,9 +90,25 @@ static void moveToFront(MoveList &moves, Move move) {
     std::rotate(moves.begin(), it, it + 1);
 }
 
+double Minimax::elapsed_ms() const {
+  return static_cast<double>(std::clock() - start_time_) * 1000.0 /
+         CLOCKS_PER_SEC;
+}
+
+bool Minimax::out_of_time() {
+  if (!stopped_ && nodes % CHECK_EVERY_NODES == 0 &&
+      elapsed_ms() > time_limit_ms_)
+    stopped_ = true;
+  return stopped_;
+}
+
+// Once out of time, negamax and quiescence return 0 right away; the
+// unfinished depth is thrown away, so these scores are never used (or stored).
 int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
                      int beta) {
   ++nodes;
+  if (out_of_time())
+    return 0;
   const int alpha_orig =
       alpha; // to tell an exact score from a bound at the end
 
@@ -114,7 +132,7 @@ int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
     return forced_score;
   }
   if (depth == 0) {
-    return opts_.qscence ? quiescence(pos_nd, alpha, beta)
+    return opts_.qscence ? quiescence(pos_nd, ply, alpha, beta)
                          : evaluate_pos_(pos_nd);
   }
 
@@ -141,6 +159,8 @@ int Minimax::negamax(Position &pos_nd, int depth, int ply, int alpha,
             ? -negamax(pos_nd, depth - 1, ply + 1, -beta, -alpha)
             : -negamax(pos_nd, depth - 1, ply + 1, -INF_CPAWNS, INF_CPAWNS);
     pos_nd.unmakeMove();
+    if (stopped_)
+      return 0; // before the TT store: no unfinished scores in the table
     if (score > best_score) {
       best_score = score;
       best_move = move;
@@ -164,55 +184,46 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
   Position pos_root = pos; // one copy per search
   nodes = 1;               // the root; negamax counts the rest
   depth_reached = 0;
-  ms_used = 0.0;
-  // The moves (all equally good) and score of the last depth that finished
-  // within the time budget; a depth that finishes over it is thrown away.
-  MoveList best_moves;
-  int best_cpawns = 0;
-  int alpha =
-      0; // read by the loop condition before the first depth (0 = not a mate)
-  int iter_depth = 1;
-  const std::clock_t start_time = std::clock();
-  const auto elapsed_ms = [start_time] { // CPU time since the search started
-    return static_cast<double>(std::clock() - start_time) * 1000.0 /
-           CLOCKS_PER_SEC;
-  };
-  // Start a new depth only if it is predicted to finish within the time
-  // budget: it should take about as long as the last depth, times how much
-  // the last depth grew over the one before (capped, since the first depths
-  // are too short to measure reliably).
-  double prev_depth_ms = 0.0, last_depth_ms = 0.0;
-  const auto next_depth_fits = [&] {
-    const double growth = prev_depth_ms > 0.0
-                              ? std::min(last_depth_ms / prev_depth_ms, MAX_GROWTH)
-                              : MAX_GROWTH;
-    return elapsed_ms() + last_depth_ms * growth <= opts_.ms_per_move;
-  };
-  while ((iter_depth == 1 || next_depth_fits()) && !is_mate_cpawns(alpha)) {
-    const double depth_start_ms = elapsed_ms();
-    MoveList moves{};
-    generateLegalMoves(pos_root, moves);
-    if (moves.empty())
-      return {Move{}, pos.inCheck() ? -MATE_CPAWNS : 0};
+  start_time_ = std::clock();
+  time_limit_ms_ = opts_.max_depth > 0
+                       ? std::numeric_limits<double>::infinity() // fixed depth
+                       : opts_.ms_per_move;
+  stopped_ = false;
 
-    if (opts_.ordering) {
-      std::stable_sort(moves.begin(), moves.end(),
-                       [&pos_root, this](Move a, Move b) {
-                         return MVV_LVA(pos_root, a) > MVV_LVA(pos_root, b);
-                       });
-    }
-    // the previous depth's best move goes first at the root.
-    // if (!best_moves.empty())
-    //   moveToFront(moves, best_moves[0]);
+  MoveList moves{};
+  generateLegalMoves(pos_root, moves);
+  if (moves.empty())
+    return {Move{}, pos.inCheck() ? -MATE_CPAWNS : 0};
+  if (opts_.ordering) {
+    std::stable_sort(moves.begin(), moves.end(),
+                     [&pos_root, this](Move a, Move b) {
+                       return MVV_LVA(pos_root, a) > MVV_LVA(pos_root, b);
+                     });
+  }
+
+  // Iterative deepening: the moves (all equally good) and score of the last
+  // depth that finished in time. Before depth 1 finishes that is a random
+  // move (depth 0), played if no depth finishes.
+  MoveList best_moves;
+  best_moves.push(moves[rng.below(moves.size())]);
+  int best_cpawns = 0;
+  // Search ever deeper until time runs out (an unfinished depth is thrown
+  // away), a mate is found, or the ply limit is reached.
+  const int last_depth = opts_.max_depth > 0 ? opts_.max_depth : MAX_PLY;
+  for (int iter_depth = 1; iter_depth <= last_depth && !is_mate_cpawns(best_cpawns);
+       ++iter_depth) {
+    moveToFront(moves, best_moves[0]); // the previous depth's best move first
 
     MoveList depth_best_moves;
-    alpha = -INF_CPAWNS;
-    int beta = INF_CPAWNS;
+    int alpha = -INF_CPAWNS;
+    const int beta = INF_CPAWNS;
     for (Move move : moves) {
       pos_root.makeMove(move);
       const int cand_cpawns =
           -negamax(pos_root, iter_depth - 1, 1, -beta, -(alpha - 1));
       pos_root.unmakeMove();
+      if (stopped_)
+        break;
       if (cand_cpawns > alpha) {
         alpha = cand_cpawns;
         depth_best_moves.clear();
@@ -221,21 +232,14 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
         depth_best_moves.push(move);
       }
     }
+    // Out of time during this depth, or (between clock checks) just after it
+    // finished: thrown away.
     const double finished_ms = elapsed_ms();
-    prev_depth_ms = last_depth_ms;
-    last_depth_ms = finished_ms - depth_start_ms;
-    if (finished_ms > opts_.ms_per_move)
-      break; // finished over the budget: thrown away
+    if (stopped_ || finished_ms > time_limit_ms_)
+      break;
     best_moves = depth_best_moves;
     best_cpawns = alpha;
-    ms_used = finished_ms;
     depth_reached = iter_depth; // this depth finished in time
-    ++iter_depth;
-  }
-
-  if (best_moves.empty()) { // no depth finished in time (ms_used stays 0)
-    Random rand_eng;
-    return rand_eng.search(pos);
   }
 
   Move best_move = best_moves[rng.below(best_moves.size())];
@@ -243,19 +247,31 @@ std::tuple<Move, int> Minimax::search(const Position &pos) {
   return {best_move, best_cpawns};
 }
 
-int Minimax::quiescence(Position &pos, int alpha, int beta) {
+// Searches captures and promotions until the position is quiet, then evaluates.
+// In check the position isn't quiet either: the side to move can't stand pat
+// (the check must be answered), every escape is searched, not just captures,
+// and having none is mate.
+int Minimax::quiescence(Position &pos, int ply, int alpha, int beta) {
   ++nodes;
+  if (out_of_time())
+    return 0;
 
-  int curr_val = evaluate_pos_(pos);
-  if (curr_val >= beta) {
-    return curr_val;
-  }
-  if (curr_val > alpha) {
-    alpha = curr_val;
+  const bool in_check = pos.inCheck();
+  MoveList captures; // all escapes when in check
+  generateLegalMoves(pos, captures, in_check ? GenType::All : GenType::Noisy);
+  if (in_check) {
+    if (captures.empty())
+      return -(MATE_CPAWNS - ply);
+  } else {
+    int curr_val = evaluate_pos_(pos);
+    if (curr_val >= beta) {
+      return curr_val;
+    }
+    if (curr_val > alpha) {
+      alpha = curr_val;
+    }
   }
 
-  MoveList captures;
-  generateLegalMoves(pos, captures, GenType::Noisy);
   if (opts_.ordering)
     std::stable_sort(captures.begin(), captures.end(),
                      [&pos, this](Move x, Move y) {
@@ -264,8 +280,10 @@ int Minimax::quiescence(Position &pos, int alpha, int beta) {
 
   for (const Move move : captures) {
     pos.makeMove(move);
-    int score = -quiescence(pos, -beta, -alpha);
+    int score = -quiescence(pos, ply + 1, -beta, -alpha);
     pos.unmakeMove();
+    if (stopped_)
+      return 0;
     if (score >= beta) {
       return score;
     }
@@ -274,6 +292,13 @@ int Minimax::quiescence(Position &pos, int alpha, int beta) {
     }
   }
   return alpha;
+}
+
+int Minimax::quiescenceScore(const Position &pos) {
+  Position copy = pos;
+  time_limit_ms_ = std::numeric_limits<double>::infinity(); // no time limit
+  stopped_ = false;
+  return quiescence(copy, 0, -INF_CPAWNS, INF_CPAWNS);
 }
 
 int Minimax::MVV_LVA(const Position &pos, Move move) {
