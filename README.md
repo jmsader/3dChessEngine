@@ -215,7 +215,7 @@ tools/compare.sh [--time MS] [--games N] --all
 
 A convenience wrapper around `match`: builds first, keeps the computer awake, and saves the
 results to `results/<ms>ms.csv` (rank, engine, Elo, average depth) and
-`results/pairs/<ms>ms.csv`. Defaults: 10 ms per move, 16 games per pair. Each run replaces the
+`results/pairs/<ms>ms.csv`. Defaults: 10 ms per move, 4 games per pair. Each run replaces the
 files for its own time control only, so runs at different time controls can go side by side,
 for example in separate terminal tabs.
 

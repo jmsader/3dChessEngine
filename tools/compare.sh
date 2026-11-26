@@ -14,7 +14,7 @@
 #                 weights/Alpha-Beta+Ord+Q_d<depth>_linear.txt / _mlp.txt
 #                 (e.g. Alpha-Beta+LIN_d2, Alpha-Beta+Ord+Q+NN_d2)
 #   --time MS     milliseconds per move   (default 10)
-#   --games N     games per pair          (default 16)
+#   --games N     games per pair          (default 4)
 #   --all         ignore any engines named and play every engine: each search engine with
 #                 material, +LIN_d2 and +NN_d2, plus Random (16 engines, 120 pairs)
 #
@@ -33,7 +33,7 @@ set -euo pipefail
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
 time_ms=10
-games=16
+games=4
 engines=()
 all=0
 
